@@ -38,18 +38,19 @@ defmodule Redis.Connection do
   end
 
   defp handle_new_data(%__MODULE__{socket: socket} = state) do
-    case String.split(state.buffer, "\n", parts: 2) do
-      [line, rest] ->
-        # If our buffer has at least one line, echo it back to the client.
-        :gen_tcp.send(socket, line <> "\n")
-        # Remove that line from our buffer.
-        state = put_in(state.buffer, rest)
-        # And don't forget to check for more lines by recursing.
-        handle_new_data(state)
+    :gen_tcp.send(socket, "+PONG\r\n")
+    # case String.split(state.buffer, "\n", parts: 2) do
+    #   [line, rest] ->
+    #     # If our buffer has at least one line, echo it back to the client.
+    #     :gen_tcp.send(socket, line <> "\n")
+    #     # Remove that line from our buffer.
+    #     state = put_in(state.buffer, rest)
+    #     # And don't forget to check for more lines by recursing.
+    #     handle_new_data(state)
 
-      _other ->
-        # Buffer has no lines, do nothing.
-        state
-    end
+    #   _other ->
+    #     # Buffer has no lines, do nothing.
+    #     state
+    # end
   end
 end
