@@ -39,6 +39,7 @@ defmodule Redis.Connection do
 
   defp handle_new_data(%__MODULE__{socket: socket} = state) do
     :gen_tcp.send(socket, "+PONG\r\n")
+    state
     # case String.split(state.buffer, "\n", parts: 2) do
     #   [line, rest] ->
     #     # If our buffer has at least one line, echo it back to the client.
