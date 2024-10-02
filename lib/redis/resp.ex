@@ -76,19 +76,73 @@ defmodule Redis.RESP do
   ## Examples
 
       iex> Redis.RESP.decode("+OK\r\n")
-      {:ok, "OK", ""}
+      {"OK", ""}
 
-      iex> Redis.RESP.decode("+OK\r\ncruft")
-      :error
-
-      iex> Redis.RESP.decode(":42\r\n")
-      {:ok, 42}
+      iex> Redis.RESP.decode("+nope\r\nignore")
+      {"nope", "ignore"}
 
       iex> Redis.RESP.decode("$3\r\n\0hi\r\n")
-      {:ok, <<0, "hi">>}
+      {<<0, "hi">>, ""}
+
+      iex> Redis.RESP.decode("*2\r\n$2\r\nOK\r\n$3\r\nbye\r\nleftovercrud")
+      {["OK", "bye"], "leftovercrud"}
 
 
   """
 
-  def decode(input) when is_binary(input), do: :unimplemented
+  def decode(input) when is_binary(input), do: decode_impl(input)
+  defp decode_impl("*" <> rest), do: decode_array(rest)
+  defp decode_impl("+" <> rest), do: decode_simple_string(rest)
+  defp decode_impl("$" <> rest), do: decode_bulk_string(rest)
+
+  defp decode_array(input) do
+    # First, grab the array length.
+    {count, rest} = decode_positive_integer(input)
+    decode_array_impl(rest, count)
+  end
+
+  defp decode_array_impl(data, count_remaining, accumulator \\ [])
+
+  defp decode_array_impl(rest, 0, accumulator) do
+    {accumulator, rest}
+  end
+
+  defp decode_array_impl(<<?$, data::binary>>, count_remaining, accumulator) do
+    {this_elem, rest} = decode_bulk_string(data)
+    decode_array_impl(rest, count_remaining - 1, accumulator ++ [this_elem])
+  end
+
+  # Recursively call decode_integer, skimming off the leftmost digit each time and accumulating all of them until we have the final number after hitting a crlf.
+  defp decode_positive_integer(data, accumulator \\ 0)
+
+  defp decode_positive_integer(<<@crlf, rest::binary>>, accumulator), do: {accumulator, rest}
+
+  defp decode_positive_integer(<<digit, rest::binary>>, accumulator) when digit in ?0..?9,
+    do: decode_positive_integer(rest, accumulator * 10 + (digit - ?0))
+
+  # To decode a simple string, just keep grabbing bytes until you run into crlf.
+  defp decode_simple_string(input), do: until_crlf(input)
+
+  # Return all the bytes until the crlf.
+  defp until_crlf(input, accumulator \\ "")
+
+  defp until_crlf(<<@crlf, rest::binary>>, accumulator) do
+    {accumulator, rest}
+  end
+
+  defp until_crlf(<<letter, rest::binary>>, accumulator) do
+    until_crlf(rest, <<accumulator::binary, letter>>)
+  end
+
+  defp decode_bulk_string(input) do
+    {length, rest} = decode_positive_integer(input)
+
+    case length do
+      -1 ->
+        nil
+
+      _ ->
+        until_crlf(rest)
+    end
+  end
 end
