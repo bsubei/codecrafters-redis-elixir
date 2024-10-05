@@ -5,8 +5,10 @@ defmodule Redis.Connection do
   """
   use GenServer
   require Logger
+  alias Redis.RESP
+  alias Redis.Connection
 
-  defstruct [:socket, buffer: <<>>]
+  defstruct [:socket, buffer: <<>>, kvstore: %{}]
 
   @spec start_link(:gen_tcp.socket()) :: GenServer.on_start()
   def start_link(socket) do
@@ -37,21 +39,42 @@ defmodule Redis.Connection do
     {:stop, :normal, state}
   end
 
+  # TODO handle incomplete messages.
   defp handle_new_data(%__MODULE__{socket: socket} = state) do
-    :gen_tcp.send(socket, "+PONG\r\n")
-    state
-    # case String.split(state.buffer, "\n", parts: 2) do
-    #   [line, rest] ->
-    #     # If our buffer has at least one line, echo it back to the client.
-    #     :gen_tcp.send(socket, line <> "\n")
-    #     # Remove that line from our buffer.
-    #     state = put_in(state.buffer, rest)
-    #     # And don't forget to check for more lines by recursing.
-    #     handle_new_data(state)
+    case state.buffer do
+      # Done, nothing more to handle.
+      "" ->
+        state
 
-    #   _other ->
-    #     # Buffer has no lines, do nothing.
-    #     state
-    # end
+      _ ->
+        {:ok, decoded, rest} = RESP.decode(state.buffer)
+
+        # We only respond to Array requests, just drop other responses.
+        case decoded do
+          [_ | _] = request ->
+            response = parse_request(state, request)
+            :gen_tcp.send(socket, RESP.encode(response))
+
+          _ ->
+            Logger.error(
+              "Got non-array request from client #{inspect(socket)}: #{state.buffer} -> #{inspect(decoded)}"
+            )
+        end
+
+        state = put_in(state.buffer, rest)
+        handle_new_data(state)
+    end
+  end
+
+  # TODO handle case insensitivity
+  defp parse_request(_, ["PING"]), do: "PONG"
+
+  defp parse_request(_, ["PING", arg]), do: arg
+
+  defp parse_request(_, ["ECHO", arg]), do: arg
+
+  defp parse_request(state = %Connection{}, ["GET", arg]) do
+    {:ok, value} = Map.fetch(state.kvstore, arg)
+    value
   end
 end

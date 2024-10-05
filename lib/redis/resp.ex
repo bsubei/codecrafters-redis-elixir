@@ -15,6 +15,7 @@ defmodule Redis.RESP do
 
   @doc ~S"""
     Encodes a list of Elixir terms as an iodata of a Redis (RESP) Array of Bulk Strings.
+    Alternatively, if a single element is provided, the output will be encoded as a simple string.
 
     ## Examples
 
@@ -22,9 +23,16 @@ defmodule Redis.RESP do
         iex> IO.iodata_to_binary(iodata)
         "*3\r\n$3\r\nSET\r\n$5\r\nmykey\r\n$1\r\n1\r\n"
 
+        iex> iodata = Redis.RESP.encode("PONG")
+        iex> IO.iodata_to_binary(iodata)
+        "+PONG\r\n"
+
   """
   @spec encode([String.Chars.t()]) :: iodata
   def encode(elems) when is_list(elems), do: encode(elems, [], 0)
+  @spec encode(String.Chars.t()) :: iodata
+  def encode(input) when is_binary(input), do: encode_simple_string(input)
+
   # General case for recursion.
   defp encode([first | rest], accumulator, count_so_far) do
     new_accumulator = [accumulator, encode_bulk_string(first)]
