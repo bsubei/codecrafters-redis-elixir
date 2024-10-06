@@ -8,6 +8,8 @@ defmodule Redis.Application do
   @impl true
   def start(_type, _args) do
     children = [
+      # TODO we hardcode the key-value store to be empty on startup. Load from file later.
+      {Redis.KeyValueStore, %{}},
       {Redis.ConnectionAcceptor, port: 6379}
     ]
 
