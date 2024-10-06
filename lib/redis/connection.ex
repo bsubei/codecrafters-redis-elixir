@@ -83,13 +83,13 @@ defmodule Redis.Connection do
 
   # TODO handle case insensitivity
   defp parse_request(state, ["PING"]), do: {state, make_simple_string("PONG")}
-  defp parse_request(state, ["PING", arg]), do: {state, make_array([arg])}
+  defp parse_request(state, ["PING", arg]), do: {state, make_bulk_string(arg)}
 
-  defp parse_request(state, ["ECHO", arg]), do: {state, make_array([arg])}
+  defp parse_request(state, ["ECHO", arg]), do: {state, make_bulk_string(arg)}
 
   defp parse_request(state = %Connection{}, ["GET", arg]) do
     case Map.fetch(state.kvstore, arg) do
-      {:ok, value} -> {state, make_array([value])}
+      {:ok, value} -> {state, make_bulk_string(value)}
       :error -> {state, make_bulk_string("")}
     end
   end
