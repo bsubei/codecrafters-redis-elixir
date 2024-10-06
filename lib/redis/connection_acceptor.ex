@@ -47,7 +47,7 @@ defmodule Redis.ConnectionAcceptor do
       {:ok, socket} ->
         # Create a Connection GenServer and hand over our active connection from the
         # controlling process to it.
-        {:ok, pid} = Redis.Connection.start_link(socket)
+        {:ok, pid} = Redis.Connection.start_link(socket: socket)
         :ok = :gen_tcp.controlling_process(socket, pid)
         # Remember to keep accepting more connections.
         send(self(), :accept)

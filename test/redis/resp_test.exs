@@ -6,16 +6,17 @@ defmodule Redis.RESPTest do
   describe "roundtrip encode and decode" do
     test "roundtrip PING simple string" do
       assert {:ok, "PING", ""} =
-               RESP.decode(IO.iodata_to_binary(RESP.encode_simple_string("PING")))
+               RESP.decode(IO.iodata_to_binary(RESP.encode("PING", :simple_string)))
     end
 
     test "roundtrip PING bulk string" do
-      assert {:ok, "PING", ""} = RESP.decode(IO.iodata_to_binary(RESP.encode_bulk_string("PING")))
+      assert {:ok, "PING", ""} =
+               RESP.decode(IO.iodata_to_binary(RESP.encode("PING", :bulk_string)))
     end
 
     test "roundtrip array of bulk strings" do
       assert {:ok, ["GET", "THE_KEY"], ""} ==
-               RESP.decode(IO.iodata_to_binary(RESP.encode(["GET", "THE_KEY"])))
+               RESP.decode(IO.iodata_to_binary(RESP.encode(["GET", "THE_KEY"], :array)))
     end
   end
 end

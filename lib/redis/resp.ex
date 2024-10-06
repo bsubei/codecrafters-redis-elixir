@@ -8,6 +8,7 @@ defmodule Redis.RESP do
   - "*1\r\n+PING\r\n" is decoded to ["PING"]
   - "*1\r\n$4\r\nPING\r\n" is also decoded to ["PING"]
   - ["ECHO", "hi there"] is encoded as "*2\r\n$4\r\nECHO\r\n$8\r\nhi there\r\n".
+  - "PING" is encoded as "+PING\r\n".
   """
   @crlf "\r\n"
   def crlf, do: @crlf
@@ -19,48 +20,42 @@ defmodule Redis.RESP do
 
     ## Examples
 
-        iex> iodata = Redis.RESP.encode(["SET", "mykey", "1"])
+        iex> iodata = Redis.RESP.encode(["SET", "mykey", "1"], :array)
         iex> IO.iodata_to_binary(iodata)
         "*3\r\n$3\r\nSET\r\n$5\r\nmykey\r\n$1\r\n1\r\n"
 
-        iex> iodata = Redis.RESP.encode("PONG")
+        iex> iodata = Redis.RESP.encode("PONG", :simple_string)
         iex> IO.iodata_to_binary(iodata)
         "+PONG\r\n"
 
-  """
-  @spec encode([String.Chars.t()]) :: iodata
-  def encode(elems) when is_list(elems), do: encode(elems, [], 0)
-  @spec encode(String.Chars.t()) :: iodata
-  def encode(input) when is_binary(input), do: encode_simple_string(input)
+        iex> iodata = Redis.RESP.encode("PING", :bulk_string)
+        iex> IO.iodata_to_binary(iodata)
+        "$4\r\nPING\r\n"
 
+        iex> IO.iodata_to_binary(Redis.RESP.encode("", :bulk_string))
+        "$-1\r\n"
+  """
+  @spec encode([String.Chars.t()] | String.Chars.t(), atom()) :: iodata
+  def encode(input, encoding_type)
+
+  def encode(input, :simple_string) when is_binary(input), do: [?+, input, @crlf_iodata]
+
+  def encode("", :bulk_string), do: [?$, "-1", @crlf_iodata]
+
+  def encode(text, :bulk_string),
+    do: [?$, Integer.to_string(byte_size(text)), @crlf_iodata, text, @crlf_iodata]
+
+  # For encoding an array, use recursion.
+  def encode(elems, :array) when is_list(elems), do: encode(elems, [], 0)
   # General case for recursion.
   defp encode([first | rest], accumulator, count_so_far) do
-    new_accumulator = [accumulator, encode_bulk_string(first)]
+    new_accumulator = [accumulator, encode(first, :bulk_string)]
     encode(rest, new_accumulator, count_so_far + 1)
   end
 
   # Base case for recursion (we've gone through all the elements in the list).
   defp encode([], accumulator, count_so_far),
     do: [?*, Integer.to_string(count_so_far), @crlf_iodata, accumulator]
-
-  @doc ~S"""
-    Encodes the given binary to an iodata containing a RESP bulk string.
-    ## Examples
-        iex> IO.iodata_to_binary(Redis.RESP.encode_bulk_string("PING"))
-        "$4\r\nPING\r\n"
-  """
-  def encode_bulk_string(""), do: [?$, "0"]
-
-  def encode_bulk_string(text),
-    do: [?$, Integer.to_string(byte_size(text)), @crlf_iodata, text, @crlf_iodata]
-
-  @doc ~S"""
-    Encodes the given binary to an iodata containing a RESP simple string.
-    ## Examples
-        iex> IO.iodata_to_binary(Redis.RESP.encode_simple_string("PING"))
-        "+PING\r\n"
-  """
-  def encode_simple_string(text) when is_binary(text), do: [?+, text, @crlf_iodata]
 
   # @typedoc "Possible Redis values (i.e. the result of decoding RESP messages)."
   # @type redis_value :: binary | integer | nil | %Error{} | [redis_value]
