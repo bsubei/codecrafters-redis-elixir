@@ -57,6 +57,14 @@ defmodule Redis.RESP do
   defp encode([], accumulator, count_so_far),
     do: [?*, Integer.to_string(count_so_far), @crlf_iodata, accumulator]
 
+  # TODO probably should make this a macro.
+  @spec make_simple_string(String.Chars.t()) :: String.Chars.t()
+  def make_simple_string(input), do: IO.iodata_to_binary(encode(input, :simple_string))
+  @spec make_bulk_string(String.Chars.t()) :: String.Chars.t()
+  def make_bulk_string(input), do: IO.iodata_to_binary(encode(input, :bulk_string))
+  @spec make_array([String.Chars.t()]) :: String.Chars.t()
+  def make_array(input), do: IO.iodata_to_binary(encode(input, :array))
+
   # @typedoc "Possible Redis values (i.e. the result of decoding RESP messages)."
   # @type redis_value :: binary | integer | nil | %Error{} | [redis_value]
 

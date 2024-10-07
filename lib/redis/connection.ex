@@ -81,22 +81,22 @@ defmodule Redis.Connection do
   end
 
   # TODO handle case insensitivity
-  defp parse_request(state, ["PING"]), do: {state, make_simple_string("PONG")}
-  defp parse_request(state, ["PING", arg]), do: {state, make_bulk_string(arg)}
+  defp parse_request(state, ["PING"]), do: {state, simple_string_request("PONG")}
+  defp parse_request(state, ["PING", arg]), do: {state, bulk_string_request(arg)}
 
-  defp parse_request(state, ["ECHO", arg]), do: {state, make_bulk_string(arg)}
+  defp parse_request(state, ["ECHO", arg]), do: {state, bulk_string_request(arg)}
 
   defp parse_request(state = %Connection{}, ["GET", arg]) do
     value = Redis.KeyValueStore.get(arg) || ""
-    {state, make_bulk_string(value)}
+    {state, bulk_string_request(value)}
   end
 
   defp parse_request(state = %Connection{}, ["SET", key, value]) do
     Redis.KeyValueStore.set(key, value)
-    {state, make_simple_string("OK")}
+    {state, simple_string_request("OK")}
   end
 
-  defp make_simple_string(input), do: %{data: input, encoding: :simple_string}
-  defp make_bulk_string(input), do: %{data: input, encoding: :bulk_string}
-  # defp make_array(input), do: %{data: input, encoding: :array}
+  defp simple_string_request(input), do: %{data: input, encoding: :simple_string}
+  defp bulk_string_request(input), do: %{data: input, encoding: :bulk_string}
+  # defp array_request(input), do: %{data: input, encoding: :array}
 end
