@@ -9,13 +9,12 @@ defmodule Redis.Connection do
   alias Redis.Connection
 
   # TODO this kvstore is only local to this connection. This should be made into its own GenServer or task to store the state globally across all connections in the server.
-  defstruct [:socket, :send_fn, buffer: <<>>, kvstore: %{}]
+  defstruct [:socket, :send_fn, buffer: <<>>]
 
   @spec start_link(%{
           # The socket must always be specified.
-          socket: :gen_tcp.socket(),
+          socket: :gen_tcp.socket()
           # The send_fn is optional and will default to :gen_tcp.send/2 if not specified.
-          send_fn: (port() | atom(), iodata() -> :ok | {:error, term()}) | nil
         }) :: GenServer.on_start()
   def start_link(init_arg) do
     GenServer.start_link(__MODULE__, init_arg)
@@ -88,17 +87,16 @@ defmodule Redis.Connection do
   defp parse_request(state, ["ECHO", arg]), do: {state, make_bulk_string(arg)}
 
   defp parse_request(state = %Connection{}, ["GET", arg]) do
-    case Map.fetch(state.kvstore, arg) do
-      {:ok, value} -> {state, make_bulk_string(value)}
-      :error -> {state, make_bulk_string("")}
-    end
+    value = Redis.KeyValueStore.get(arg) || ""
+    {state, make_bulk_string(value)}
   end
 
   defp parse_request(state = %Connection{}, ["SET", key, value]) do
-    {put_in(state.kvstore, Map.put(state.kvstore, key, value)), make_simple_string("OK")}
+    Redis.KeyValueStore.set(key, value)
+    {state, make_simple_string("OK")}
   end
 
   defp make_simple_string(input), do: %{data: input, encoding: :simple_string}
   defp make_bulk_string(input), do: %{data: input, encoding: :bulk_string}
-  defp make_array(input), do: %{data: input, encoding: :array}
+  # defp make_array(input), do: %{data: input, encoding: :array}
 end
