@@ -96,6 +96,22 @@ defmodule Redis.Connection do
     {state, simple_string_request("OK")}
   end
 
+  # Set with expiry specified.
+  defp parse_request(state = %Connection{}, [
+         "SET",
+         key,
+         value,
+         "px",
+         relative_timestamp_milliseconds
+       ]) do
+    # Get the epoch timestamp using the relative requested expiry. i.e. The expiry epoch/unix time is = now + provided expiry timestamp.
+    expiry_timestamp_epoch_ms =
+      System.os_time(:millisecond) + String.to_integer(relative_timestamp_milliseconds)
+
+    Redis.KeyValueStore.set(key, value, expiry_timestamp_epoch_ms)
+    {state, simple_string_request("OK")}
+  end
+
   defp simple_string_request(input), do: %{data: input, encoding: :simple_string}
   defp bulk_string_request(input), do: %{data: input, encoding: :bulk_string}
   # defp array_request(input), do: %{data: input, encoding: :array}

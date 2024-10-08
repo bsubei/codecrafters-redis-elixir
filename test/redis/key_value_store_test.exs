@@ -18,5 +18,7 @@ defmodule Redis.KeyValueStoreTest do
       assert KeyValueStore.set("fortytwo", "42") == :ok
       assert KeyValueStore.get("fortytwo") == "42"
     end
+
+    # TODO eventually add tests here that check for expiry, but the integration tests I have in connection_test.exs already cover this so it's fine.
   end
 end

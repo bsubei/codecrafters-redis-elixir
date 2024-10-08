@@ -80,5 +80,41 @@ defmodule Redis.ConnectionTest do
       Connection.handle_info({:tcp, second_connection.socket, get_request}, second_connection)
       assert_receive {:tcp_send, _, ^expected_reply}, 100
     end
+
+    test "sending SET with an already expired expiry should return null when we try to GET",
+         %{
+           connection: connection
+         } do
+      # Set a key-value with 0 ms expiry.
+      set_request = IO.iodata_to_binary(RESP.encode(["SET", "bananas", "yum", "px", "0"], :array))
+      Connection.handle_info({:tcp, connection.socket, set_request}, connection)
+      ok_reply = RESP.encode("OK", :simple_string)
+      assert_receive {:tcp_send, _, ^ok_reply}, 100
+      # Wait a tiny bit to ensure that the entry has expired.
+      Process.sleep(100)
+      # Get the key-value, it should be expired.
+      get_request = IO.iodata_to_binary(RESP.encode(["GET", "bananas"], :array))
+      Connection.handle_info({:tcp, connection.socket, get_request}, connection)
+      null_string = RESP.encode("", :bulk_string)
+      assert_receive {:tcp_send, _, ^null_string}, 100
+    end
+
+    test "sending SET with a far expiry should return the entry when we try to GET",
+         %{
+           connection: connection
+         } do
+      # Set a key-value with 10000 ms expiry.
+      set_request =
+        IO.iodata_to_binary(RESP.encode(["SET", "bananas", "yum", "px", "10000"], :array))
+
+      Connection.handle_info({:tcp, connection.socket, set_request}, connection)
+      ok_reply = RESP.encode("OK", :simple_string)
+      assert_receive {:tcp_send, _, ^ok_reply}, 100
+      # Get the key-value, it should not be expired
+      get_request = IO.iodata_to_binary(RESP.encode(["GET", "bananas"], :array))
+      Connection.handle_info({:tcp, connection.socket, get_request}, connection)
+      expected_reply = RESP.encode("yum", :bulk_string)
+      assert_receive {:tcp_send, _, ^expected_reply}, 100
+    end
   end
 end
