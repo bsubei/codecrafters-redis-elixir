@@ -13,7 +13,9 @@ defmodule Redis.ServerInfo do
     defstruct [:role, :master_replid, master_repl_offset: 0, connected_slaves: 0]
 
     def init() do
-      init(UUID.uuid4() |> String.replace("-", ""))
+      # TODO use UUID to get an actual randomized uuid when I figure out how to get codecrafters to load in deps. Use a hardcoded string for now.
+      # init(UUID.uuid4() |> String.replace("-", ""))
+      init("8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb")
     end
 
     def init(master_replid) when is_binary(master_replid) do
@@ -21,29 +23,36 @@ defmodule Redis.ServerInfo do
     end
   end
 
+  def init() do
+    %__MODULE__{replication: Replication.init()}
+  end
+
   @doc ~S"""
+    Convert the contents of all or the specified sections of the ServerInfo to a displayable string.
 
     ## Examples
 
         iex> server_info = %Redis.ServerInfo{replication: Redis.ServerInfo.Replication.init("foo")}
         iex> Redis.ServerInfo.to_string(server_info)
         "# replication\nrole:master\nmaster_replid:foo\nmaster_repl_offset:0\nconnected_slaves:0\n"
+        iex> Redis.ServerInfo.to_string(server_info, ["replication"])
+        "# replication\nrole:master\nmaster_replid:foo\nmaster_repl_offset:0\nconnected_slaves:0\n"
   """
   @spec to_string(__MODULE__) :: binary()
   def to_string(server_info) do
     # TODO probably should use a macro for this.
-    to_string(server_info, [:replication])
+    to_string(server_info, ["replication"])
   end
 
-  @spec to_string(__MODULE__, list(atom())) :: binary()
+  @spec to_string(__MODULE__, list(binary())) :: binary()
   def to_string(server_info, section_names) do
     IO.iodata_to_binary(to_string(server_info, section_names, []))
   end
 
-  @spec to_string(__MODULE__, list(atom()), iodata()) :: iodata()
+  @spec to_string(__MODULE__, list(binary()), iodata()) :: iodata()
   defp to_string(_server_info, [], accumulator), do: accumulator
 
-  @spec to_string(__MODULE__, list(atom()), iodata()) :: iodata()
+  @spec to_string(__MODULE__, list(binary()), iodata()) :: iodata()
   defp to_string(server_info, section_names_remaining, accumulator)
        when is_list(section_names_remaining) do
     # Grab the first section name, e.g. :replication.
@@ -53,7 +62,7 @@ defmodule Redis.ServerInfo do
     section_header = "# #{section_name}\n"
 
     section_contents =
-      Map.get(server_info, section_name)
+      Map.get(server_info, String.to_atom(section_name))
       |> Map.from_struct()
       |> Enum.map_join("\n", fn
         {k, nil} -> "#{k}:"

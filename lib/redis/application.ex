@@ -13,12 +13,14 @@ defmodule Redis.Application do
       )
 
     server_config = Redis.ServerConfig.create(opts)
+    server_info = Redis.ServerInfo.init()
 
     children = [
       # TODO we hardcode the key-value store to be empty on startup. Load from file later.
       {Redis.KeyValueStore, %{}},
       # TODO if the server state restarts, it should probably restart everything. Figure out a proper supervision tree for this later.
-      {Redis.ServerState, %Redis.ServerState{server_config: server_config}},
+      {Redis.ServerState,
+       %Redis.ServerState{server_config: server_config, server_info: server_info}},
       {Redis.ConnectionAcceptor, {}}
     ]
 

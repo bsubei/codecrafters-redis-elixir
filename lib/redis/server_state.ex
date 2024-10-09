@@ -7,8 +7,9 @@ defmodule Redis.ServerState do
   # We use an Agent because GenServer is overkill.
   use Agent
   alias Redis.ServerConfig
+  alias Redis.ServerInfo
 
-  defstruct server_config: ServerConfig
+  defstruct server_config: ServerConfig, server_info: ServerInfo
 
   @spec start_link(%__MODULE__{}) :: Agent.on_start()
   def start_link(init_data), do: Agent.start_link(fn -> init_data end, name: __MODULE__)

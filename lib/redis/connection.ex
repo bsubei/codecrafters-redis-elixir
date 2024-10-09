@@ -111,6 +111,18 @@ defmodule Redis.Connection do
     {state, simple_string_request("OK")}
   end
 
+  defp parse_request(state = %Connection{}, ["INFO"]) do
+    {state,
+     bulk_string_request(Redis.ServerInfo.to_string(Redis.ServerState.get_state().server_info))}
+  end
+
+  defp parse_request(state = %Connection{}, ["INFO" | rest]) do
+    {state,
+     bulk_string_request(
+       Redis.ServerInfo.to_string(Redis.ServerState.get_state().server_info, rest)
+     )}
+  end
+
   defp simple_string_request(input), do: %{data: input, encoding: :simple_string}
   defp bulk_string_request(input), do: %{data: input, encoding: :bulk_string}
   # defp array_request(input), do: %{data: input, encoding: :array}
