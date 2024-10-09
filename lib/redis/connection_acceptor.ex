@@ -15,7 +15,7 @@ defmodule Redis.ConnectionAcceptor do
 
   @impl true
   def init(_) do
-    port = Redis.ServerState.get_state().server_config.port
+    port = Redis.ServerState.get_state().cli_config.port
 
     listen_options = [
       :binary,

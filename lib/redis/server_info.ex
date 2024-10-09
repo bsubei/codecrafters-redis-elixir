@@ -9,22 +9,24 @@ defmodule Redis.ServerInfo do
   defmodule Replication do
     @moduledoc """
     This Replication module defines the metadata about replication that will show up in the INFO command.
+
+    role is always either :master or :slave
     """
     defstruct [:role, :master_replid, master_repl_offset: 0, connected_slaves: 0]
 
-    def init() do
+    def init(role) when is_atom(role) do
       # TODO use UUID to get an actual randomized uuid when I figure out how to get codecrafters to load in deps. Use a hardcoded string for now.
-      # init(UUID.uuid4() |> String.replace("-", ""))
-      init("8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb")
+      # init(role, UUID.uuid4() |> String.replace("-", ""))
+      init(role, "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb")
     end
 
-    def init(master_replid) when is_binary(master_replid) do
-      %__MODULE__{role: :master, master_replid: master_replid}
+    def init(role, master_replid) when is_atom(role) and is_binary(master_replid) do
+      %__MODULE__{role: role, master_replid: master_replid}
     end
   end
 
-  def init() do
-    %__MODULE__{replication: Replication.init()}
+  def init(role) when is_atom(role) do
+    %__MODULE__{replication: Replication.init(role)}
   end
 
   @doc ~S"""
@@ -32,7 +34,7 @@ defmodule Redis.ServerInfo do
 
     ## Examples
 
-        iex> server_info = %Redis.ServerInfo{replication: Redis.ServerInfo.Replication.init("foo")}
+        iex> server_info = %Redis.ServerInfo{replication: Redis.ServerInfo.Replication.init(:master, "foo")}
         iex> Redis.ServerInfo.to_string(server_info)
         "# replication\nrole:master\nmaster_replid:foo\nmaster_repl_offset:0\nconnected_slaves:0\n"
         iex> Redis.ServerInfo.to_string(server_info, ["replication"])

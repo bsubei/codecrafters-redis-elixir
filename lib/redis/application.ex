@@ -4,23 +4,30 @@ defmodule Redis.Application do
   """
 
   use Application
+  alias Redis.ServerInfo
 
   @impl true
   def start(_type, _args) do
     {opts, _remaining_args, _invalid} =
       OptionParser.parse(System.argv(),
-        strict: [port: :integer]
+        strict: [port: :integer, replicaof: :string]
       )
 
-    server_config = Redis.ServerConfig.create(opts)
-    server_info = Redis.ServerInfo.init()
+    cli_config = Redis.CLIConfig.create(opts)
+
+    role =
+      case cli_config.replicaof do
+        nil -> :master
+        _ -> :slave
+      end
+
+    server_info = ServerInfo.init(role)
 
     children = [
       # TODO we hardcode the key-value store to be empty on startup. Load from file later.
       {Redis.KeyValueStore, %{}},
       # TODO if the server state restarts, it should probably restart everything. Figure out a proper supervision tree for this later.
-      {Redis.ServerState,
-       %Redis.ServerState{server_config: server_config, server_info: server_info}},
+      {Redis.ServerState, %Redis.ServerState{cli_config: cli_config, server_info: server_info}},
       {Redis.ConnectionAcceptor, {}}
     ]
 
