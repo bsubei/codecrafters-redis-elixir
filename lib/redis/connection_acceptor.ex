@@ -1,7 +1,7 @@
 defmodule Redis.ConnectionAcceptor do
   @moduledoc """
   This ConnectionAcceptor module defines the process that listens for incoming connections on a socket and creates
-  a ClientConnection process to handle each accepted incoming connection. In short, this is the part of the Redis
+  a Connection process to handle each accepted incoming connection. In short, this is the part of the Redis
   server that listens for incoming clients and kicks off processes to handle each client.
   """
 
@@ -45,9 +45,9 @@ defmodule Redis.ConnectionAcceptor do
     # Attempt to accept incoming connections.
     case :gen_tcp.accept(listen_socket, 2_000) do
       {:ok, socket} ->
-        # Create a ClientConnection GenServer and hand over our active connection from the
+        # Create a Connection GenServer and hand over our active connection from the
         # controlling process to it.
-        {:ok, pid} = Redis.ClientConnection.start_link(%{socket: socket})
+        {:ok, pid} = Redis.Connection.start_link(%{socket: socket})
         :ok = :gen_tcp.controlling_process(socket, pid)
         # Remember to keep accepting more connections.
         send(self(), :accept)
