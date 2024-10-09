@@ -8,7 +8,6 @@ defmodule Redis.Connection do
   alias Redis.RESP
   alias Redis.Connection
 
-  # TODO this kvstore is only local to this connection. This should be made into its own GenServer or task to store the state globally across all connections in the server.
   defstruct [:socket, :send_fn, buffer: <<>>]
 
   @spec start_link(%{
