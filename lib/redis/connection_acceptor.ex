@@ -14,8 +14,8 @@ defmodule Redis.ConnectionAcceptor do
   end
 
   @impl true
-  def init(options) do
-    port = Keyword.fetch!(options, :port)
+  def init(_) do
+    port = Redis.ServerState.get_state().server_config.port
 
     listen_options = [
       :binary,

@@ -7,10 +7,19 @@ defmodule Redis.Application do
 
   @impl true
   def start(_type, _args) do
+    {opts, _remaining_args, _invalid} =
+      OptionParser.parse(System.argv(),
+        strict: [port: :integer]
+      )
+
+    server_config = Redis.ServerConfig.create(opts)
+
     children = [
       # TODO we hardcode the key-value store to be empty on startup. Load from file later.
       {Redis.KeyValueStore, %{}},
-      {Redis.ConnectionAcceptor, port: 6379}
+      # TODO if the server state restarts, it should probably restart everything. Figure out a proper supervision tree for this later.
+      {Redis.ServerState, %Redis.ServerState{server_config: server_config}},
+      {Redis.ConnectionAcceptor, {}}
     ]
 
     opts = [strategy: :one_for_one, name: Redis.Supervisor]
