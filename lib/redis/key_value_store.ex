@@ -1,13 +1,26 @@
 defmodule Redis.KeyValueStore do
+  @moduledoc """
+  This KeyValueStore module holds the key-value data store of the Redis server.
+  """
+
   # We use an Agent because GenServer is overkill.
   use Agent
 
   @spec start_link(%{}) :: Agent.on_start()
   def start_link(init_data), do: Agent.start_link(fn -> init_data end, name: __MODULE__)
 
+  # TODO eventually use this on replicas (since they don't expire their own entries).
+  @spec get(String.Chars.t(), :no_expiry) :: String.Chars.t() | nil
+  def get(key, :no_expiry) when is_binary(key) do
+    case Agent.get(__MODULE__, &Map.get(&1, key)) do
+      nil -> nil
+      {value, _} -> value
+    end
+  end
+
   @spec get(String.Chars.t()) :: String.Chars.t() | nil
   def get(key) when is_binary(key) do
-    # NOTE: we do the lookup in the Agent itself because it's probably faster than copying all the data so that the caller can do the lookup itself.
+    # NOTE: we do the lookup in the Agent itself because it's probably faster than copying all the data and the caller doing the lookup itself.
     case Agent.get(__MODULE__, &Map.get(&1, key)) do
       # Key not found, return nil.
       nil ->
