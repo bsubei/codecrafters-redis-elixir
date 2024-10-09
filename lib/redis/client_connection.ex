@@ -1,14 +1,13 @@
-defmodule Redis.Connection do
+defmodule Redis.ClientConnection do
   @moduledoc """
-  This Connection module defines the process that handles a single Redis client by listening for a request and
+  This ClientConnection module defines the process that handles a single Redis client by listening for a request and
   replying with a response.
   """
   use GenServer
   require Logger
   alias Redis.RESP
-  alias Redis.Connection
+  alias Redis.ClientConnection
 
-  # TODO this kvstore is only local to this connection. This should be made into its own GenServer or task to store the state globally across all connections in the server.
   defstruct [:socket, :send_fn, buffer: <<>>]
 
   @spec start_link(%{
@@ -86,18 +85,18 @@ defmodule Redis.Connection do
 
   defp parse_request(state, ["ECHO", arg]), do: {state, bulk_string_request(arg)}
 
-  defp parse_request(state = %Connection{}, ["GET", arg]) do
+  defp parse_request(state = %ClientConnection{}, ["GET", arg]) do
     value = Redis.KeyValueStore.get(arg) || ""
     {state, bulk_string_request(value)}
   end
 
-  defp parse_request(state = %Connection{}, ["SET", key, value]) do
+  defp parse_request(state = %ClientConnection{}, ["SET", key, value]) do
     Redis.KeyValueStore.set(key, value)
     {state, simple_string_request("OK")}
   end
 
   # Set with expiry specified.
-  defp parse_request(state = %Connection{}, [
+  defp parse_request(state = %ClientConnection{}, [
          "SET",
          key,
          value,
