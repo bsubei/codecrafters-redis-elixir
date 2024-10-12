@@ -245,7 +245,7 @@ defmodule Redis.Connection do
        ) do
     new_state = put_in(state.handshake_status, :psync_received)
     master_replid = ServerState.get_state().server_info.replication.master_replid
-    {:reply, simple_string_request("FULLRESYNC #{master_replid}, 0"), new_state}
+    {:reply, simple_string_request("FULLRESYNC #{master_replid} 0"), new_state}
   end
 
   defp simple_string_request(input), do: %{data: input, encoding: :simple_string}
