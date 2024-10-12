@@ -179,10 +179,12 @@ defmodule Redis.Connection do
   defp handle_request(%__MODULE__{role: :slave, handshake_status: :ping_sent} = state, "PONG") do
     new_state = put_in(state.handshake_status, :replconf_one_sent)
 
-    [_master_address, master_port] =
-      ServerState.get_state().cli_config.replicaof |> String.split()
-
-    {:reply, array_request(["REPLCONF", "listening-port", master_port]), new_state}
+    {:reply,
+     array_request([
+       "REPLCONF",
+       "listening-port",
+       Integer.to_string(ServerState.get_state().cli_config.port)
+     ]), new_state}
   end
 
   # If we get a simple string OK back and we're a replica and we just sent the first replconf, continue the handshake by sending the second replconf message.
