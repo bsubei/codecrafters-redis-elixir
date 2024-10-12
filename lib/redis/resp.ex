@@ -65,20 +65,6 @@ defmodule Redis.RESP do
   @spec make_array([String.Chars.t()]) :: String.Chars.t()
   def make_array(input), do: IO.iodata_to_binary(encode(input, :array))
 
-  # @typedoc "Possible Redis values (i.e. the result of decoding RESP messages)."
-  # @type redis_value :: binary | integer | nil | %Error{} | [redis_value]
-
-  # @typedoc """
-  # The result of decoding a redis value.
-
-  # If the decoding was successful, we return the :ok arm with the decoded value and the remaining undecoded binary (called "rest").
-  # If the decoding failed because the data was incomplete, we return a continuation. Otherwise, we raise a ParseError.
-  # """
-  # @type on_decode(value) :: {:ok, value, binary} | {:continuation, (binary -> on_decode(value))}
-
-  # @spec decode(binary) :: on_decode(redis_value)
-  # def decode(input) when is_binary(input), do: :unimplemented
-
   @doc ~S"""
   Decodes a RESP-encoded value from the given `data`.
 
@@ -102,7 +88,7 @@ defmodule Redis.RESP do
 
 
   """
-
+  @spec decode(binary()) :: {:ok, list(binary()) | binary(), binary()}
   def decode(input) when is_binary(input), do: decode_impl(input)
   defp decode_impl("*" <> rest), do: decode_array(rest)
   defp decode_impl("+" <> rest), do: decode_simple_string(rest)

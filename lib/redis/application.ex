@@ -37,8 +37,8 @@ defmodule Redis.Application do
          server_info: server_info,
          connected_replicas: MapSet.new()
        }},
-      # Start listening to incoming connections from clients / replicas.
-      {Redis.ConnectionAcceptor, {}}
+      # Start listening to incoming connections from clients / replicas, also initiate the sync handshake with master if we're a replica.
+      {Redis.ConnectionManager, %{}}
     ]
 
     opts = [strategy: :one_for_one, name: Redis.Supervisor]
