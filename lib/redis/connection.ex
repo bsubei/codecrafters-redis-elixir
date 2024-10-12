@@ -96,12 +96,12 @@ defmodule Redis.Connection do
         state =
           case handle_request(state, decoded) do
             # This request warrants a reply.
-            {new_state, %{data: data, encoding: encoding}} ->
+            {:reply, %{data: data, encoding: encoding}, new_state} ->
               send_fn.(socket, RESP.encode(data, encoding))
               new_state
 
             # This request does not need a reply.
-            new_state ->
+            {:noreply, new_state} ->
               new_state
           end
 
@@ -110,6 +110,10 @@ defmodule Redis.Connection do
     end
   end
 
+  # If the first element of the return is :reply, then the second element is a map containing our reply message and the desired encoding, and the third element is our updated state.
+  # If the first element of the return is :noreply, then the second element is our updated state.
+  @spec handle_request(%__MODULE__{}, list(binary) | binary()) ::
+          {:reply, %{data: binary(), encoding: atom()}, %__MODULE__{}} | {:noreply, %__MODULE__{}}
   # Always reply to any PING with a PONG. But also handle the case when this could be the start of a handshake from a replica to us (if we're master).
   defp handle_request(state, ["PING"]) do
     new_state =
@@ -119,25 +123,25 @@ defmodule Redis.Connection do
         state
       end
 
-    {new_state, simple_string_request("PONG")}
+    {:reply, simple_string_request("PONG"), new_state}
   end
 
   # Echo back the args if given a PING with args. Do not treat this as the start of a handshake.
-  defp handle_request(state, ["PING", arg]), do: {state, bulk_string_request(arg)}
+  defp handle_request(state, ["PING", arg]), do: {:reply, bulk_string_request(arg), state}
 
   # Echo back the args in our reply.
-  defp handle_request(state, ["ECHO", arg]), do: {state, bulk_string_request(arg)}
+  defp handle_request(state, ["ECHO", arg]), do: {:reply, bulk_string_request(arg), state}
 
   # Get the requested key's value from our key-value store and make that our reply.
   defp handle_request(state, ["GET", arg]) do
     value = Redis.KeyValueStore.get(arg) || ""
-    {state, bulk_string_request(value)}
+    {:reply, bulk_string_request(value), state}
   end
 
   # Set the key and value in our key-value store and reply with OK.
   defp handle_request(state, ["SET", key, value]) do
     Redis.KeyValueStore.set(key, value)
-    {state, simple_string_request("OK")}
+    {:reply, simple_string_request("OK"), state}
   end
 
   # Set with expiry specified. Only handling the "px" case for now (relative expiry in milliseconds).
@@ -153,52 +157,96 @@ defmodule Redis.Connection do
       System.os_time(:millisecond) + String.to_integer(relative_timestamp_milliseconds)
 
     Redis.KeyValueStore.set(key, value, expiry_timestamp_epoch_ms)
-    {state, simple_string_request("OK")}
+    {:reply, simple_string_request("OK"), state}
   end
 
   # Reply with the contents of all the ServerInfo sections we have.
   defp handle_request(state, ["INFO"]) do
-    {state, bulk_string_request(Redis.ServerInfo.to_string(ServerState.get_state().server_info))}
+    {:reply, bulk_string_request(Redis.ServerInfo.to_string(ServerState.get_state().server_info)),
+     state}
   end
 
   # Reply with the contents of the specified ServerInfo section.
   defp handle_request(state, ["INFO" | rest]) do
-    {state,
-     bulk_string_request(Redis.ServerInfo.to_string(ServerState.get_state().server_info, rest))}
+    {:reply,
+     bulk_string_request(Redis.ServerInfo.to_string(ServerState.get_state().server_info, rest)),
+     state}
   end
 
-  ## Replies to handshake messages
+  ## Replies to handshake messages if we're a replica.
 
   # If we get a simple string PONG back and we're a replica and we're expecting this reply, continue the handshake by sending the first replconf message.
-  defp handle_request(%__MODULE__{role: :slave, handshake_status: :ping_sent} = _state, "PONG") do
-    # TODO send replconf
+  defp handle_request(%__MODULE__{role: :slave, handshake_status: :ping_sent} = state, "PONG") do
+    new_state = put_in(state.handshake_status, :replconf_one_sent)
+
+    [_master_address, master_port] =
+      ServerState.get_state().cli_config.replicaof |> String.split()
+
+    {:reply, array_request(["REPLCONF", "listening-port", master_port]), new_state}
   end
 
   # If we get a simple string OK back and we're a replica and we just sent the first replconf, continue the handshake by sending the second replconf message.
   defp handle_request(
-         %__MODULE__{role: :slave, handshake_status: :replconf_one_sent} = _state,
+         %__MODULE__{role: :slave, handshake_status: :replconf_one_sent} = state,
          "OK"
        ) do
-    # TODO send second replconf
+    new_state = put_in(state.handshake_status, :replconf_two_sent)
+    {:reply, array_request(["REPLCONF", "capa", "psync2"]), new_state}
   end
 
   # If we get a simple string OK back and we're a replica and we just sent the second replconf, continue the handshake by sending the PSYNC message.
   defp handle_request(
-         %__MODULE__{role: :slave, handshake_status: :replconf_two_sent} = _state,
+         %__MODULE__{role: :slave, handshake_status: :replconf_two_sent} = state,
          "OK"
        ) do
-    # TODO send PSYNC
+    new_state = put_in(state.handshake_status, :psync_sent)
+    {:reply, array_request(["PSYNC", "?", "-1"]), new_state}
   end
 
   # If we get a simple string FULLRESYNC back and we're a replica and we just sent the psync, continue the handshake by updating our state and not sending anything (we're awaiting the RDB transfer).
   defp handle_request(
-         %__MODULE__{role: :slave, handshake_status: :psync_sent} = _state,
-         "OK"
+         %__MODULE__{role: :slave, handshake_status: :psync_sent} = state,
+         <<"FULLRESYNC", _rest::binary>>
        ) do
-    # TODO send PSYNC
+    # TODO eventually do something with the master replid given to us.
+    new_state = put_in(state.handshake_status, :awaiting_rdb)
+    {:noreply, new_state}
+  end
+
+  # TODO :awaiting_rdb state, read the RDB file
+
+  ## Replies to handshake messages if we're master.
+
+  # If we get a REPLCONF back and we're a master and we're expecting this reply, continue the handshake by replying with OK.
+  defp handle_request(
+         %__MODULE__{role: :master, handshake_status: :ping_received} = state,
+         ["REPLCONF", "listening-port", _port]
+       ) do
+    new_state = put_in(state.handshake_status, :replconf_one_received)
+    {:reply, simple_string_request("OK"), new_state}
+  end
+
+  # If we get a second REPLCONF back and we're a master and we're expecting this reply, continue the handshake by replying with OK.
+  defp handle_request(
+         %__MODULE__{role: :master, handshake_status: :replconf_one_received} = state,
+         ["REPLCONF", "capa", "psync2"]
+       ) do
+    new_state = put_in(state.handshake_status, :replconf_two_received)
+    {:reply, simple_string_request("OK"), new_state}
+  end
+
+  # If we get a PSYNC back and we're a master and we're expecting this reply, continue the handshake by replying with FULLRESYNC.
+  # TODO figure out how to also send it the RDB file after this. Maybe it's fine if I send them concatenated together as a single binary.
+  defp handle_request(
+         %__MODULE__{role: :master, handshake_status: :replconf_two_received} = state,
+         ["PSYNC", "?", "-1"]
+       ) do
+    new_state = put_in(state.handshake_status, :psync_received)
+    master_replid = ServerState.get_state().server_info.replication.master_replid
+    {:reply, simple_string_request("FULLRESYNC #{master_replid}, 0"), new_state}
   end
 
   defp simple_string_request(input), do: %{data: input, encoding: :simple_string}
   defp bulk_string_request(input), do: %{data: input, encoding: :bulk_string}
-  # defp array_request(input), do: %{data: input, encoding: :array}
+  defp array_request(input), do: %{data: input, encoding: :array}
 end

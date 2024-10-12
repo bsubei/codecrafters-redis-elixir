@@ -111,13 +111,9 @@ defmodule Redis.ConnectionManager do
   defp connect_to_master() do
     [master_address, master_port] = ServerState.get_state().cli_config.replicaof |> String.split()
 
-    # TODO revisit these options, I'm just copy-pasting here.
     opts = [
       :binary,
-      active: true,
-      exit_on_close: false,
-      reuseaddr: true,
-      backlog: 25
+      active: true
     ]
 
     case :gen_tcp.connect(
