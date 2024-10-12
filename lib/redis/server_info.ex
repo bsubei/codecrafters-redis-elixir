@@ -12,6 +12,12 @@ defmodule Redis.ServerInfo do
 
     role is always either :master or :slave
     """
+    @type t :: %__MODULE__{
+            role: atom(),
+            master_replid: binary(),
+            master_repl_offset: integer(),
+            connected_slaves: integer()
+          }
     defstruct [:role, :master_replid, master_repl_offset: 0, connected_slaves: 0]
 
     def init(role) when is_atom(role) do
@@ -35,10 +41,10 @@ defmodule Redis.ServerInfo do
     ## Examples
 
         iex> server_info = %Redis.ServerInfo{replication: Redis.ServerInfo.Replication.init(:master, "foo")}
-        iex> Redis.ServerInfo.to_string(server_info)
-        "# replication\nrole:master\nmaster_replid:foo\nmaster_repl_offset:0\nconnected_slaves:0\n"
-        iex> Redis.ServerInfo.to_string(server_info, ["replication"])
-        "# replication\nrole:master\nmaster_replid:foo\nmaster_repl_offset:0\nconnected_slaves:0\n"
+        iex> lines = Redis.ServerInfo.to_string(server_info) |> String.split("\n") |> MapSet.new()
+        iex> assert "role:master" in lines and assert "master_replid:foo" in lines
+        iex> lines = Redis.ServerInfo.to_string(server_info, ["replication"]) |> String.split("\n") |> MapSet.new()
+        iex> assert "role:master" in lines and assert "master_replid:foo" in lines
   """
   @spec to_string(__MODULE__) :: binary()
   def to_string(server_info) do

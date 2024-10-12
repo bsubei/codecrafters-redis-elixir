@@ -4,6 +4,7 @@ defmodule Redis.CLIConfig do
   Generally, it contains things passed in as CLI arguments.
   """
 
+  @type t :: %__MODULE__{port: integer() | nil, replicaof: binary() | nil}
   defstruct [:port, :replicaof]
 
   @spec create(keyword()) :: %__MODULE__{}

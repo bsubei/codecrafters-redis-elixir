@@ -8,6 +8,9 @@ defmodule Redis.ConnectionAcceptor do
   use GenServer
   require Logger
 
+  @type t :: %__MODULE__{listen_socket: :gen_tcp.socket()}
+  defstruct [:listen_socket]
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(options) do
     GenServer.start_link(__MODULE__, options)
@@ -15,7 +18,8 @@ defmodule Redis.ConnectionAcceptor do
 
   @impl true
   def init(_) do
-    port = Redis.ServerState.get_state().cli_config.port
+    server_state = Redis.ServerState.get_state()
+    port = server_state.cli_config.port
 
     listen_options = [
       :binary,
@@ -32,7 +36,7 @@ defmodule Redis.ConnectionAcceptor do
         Logger.info("Started Redis server on port #{port}")
         # Send an :accept message so we start accepting connections once we exit this init().
         send(self(), :accept)
-        {:ok, listen_socket}
+        {:ok, %__MODULE__{listen_socket: listen_socket}}
 
       {:error, reason} ->
         # Abort, we can't start Redis if we can't listen to that port.
@@ -41,7 +45,7 @@ defmodule Redis.ConnectionAcceptor do
   end
 
   @impl true
-  def handle_info(:accept, listen_socket) do
+  def handle_info(:accept, %__MODULE__{listen_socket: listen_socket} = state) do
     # Attempt to accept incoming connections.
     case :gen_tcp.accept(listen_socket, 2_000) do
       {:ok, socket} ->
@@ -51,16 +55,16 @@ defmodule Redis.ConnectionAcceptor do
         :ok = :gen_tcp.controlling_process(socket, pid)
         # Remember to keep accepting more connections.
         send(self(), :accept)
-        {:noreply, listen_socket}
+        {:noreply, state}
 
       {:error, :timeout} ->
         # Just try again if we time out.
         send(self(), :accept)
-        {:noreply, listen_socket}
+        {:noreply, state}
 
       {:error, reason} ->
         # Shut down the server otherwise.
-        {:stop, reason, listen_socket}
+        {:stop, reason, state}
     end
   end
 end

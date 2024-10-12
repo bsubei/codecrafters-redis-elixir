@@ -9,7 +9,12 @@ defmodule Redis.ServerState do
   alias Redis.CLIConfig
   alias Redis.ServerInfo
 
-  defstruct cli_config: CLIConfig, server_info: ServerInfo
+  @type t :: %__MODULE__{
+          cli_config: %CLIConfig{},
+          server_info: %ServerInfo{},
+          connected_replicas: MapSet.t(:gen_tcp.socket())
+        }
+  defstruct cli_config: CLIConfig, server_info: ServerInfo, connected_replicas: MapSet.new()
 
   @spec start_link(%__MODULE__{}) :: Agent.on_start()
   def start_link(init_data), do: Agent.start_link(fn -> init_data end, name: __MODULE__)
@@ -22,5 +27,17 @@ defmodule Redis.ServerState do
   @spec set_state(%__MODULE__{}) :: :ok
   def set_state(new_state) do
     Agent.update(__MODULE__, fn _ -> new_state end)
+  end
+
+  @spec add_connected_replica(:gen_tcp.socket()) :: :ok
+  def add_connected_replica(replica) do
+    Agent.update(__MODULE__, fn state ->
+      update_in(state.connected_replicas, fn replicas -> MapSet.put(replicas, replica) end)
+    end)
+  end
+
+  @spec has_connected_replica(:gen_tcp.socket()) :: boolean()
+  def has_connected_replica(replica) do
+    Agent.get(__MODULE__, fn state -> state.connected_replicas end) |> MapSet.member?(replica)
   end
 end
