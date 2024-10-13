@@ -31,7 +31,7 @@ defmodule Redis.ServerState do
     Agent.update(__MODULE__, fn _ -> new_state end)
   end
 
-  @spec add_connected_replica(:gen_tcp.socket()) :: :ok
+  @spec add_connected_replica(%Connection{}) :: :ok
   def add_connected_replica(replica) do
     Agent.update(__MODULE__, fn state ->
       update_in(state.connected_replicas, fn replicas -> MapSet.put(replicas, replica) end)

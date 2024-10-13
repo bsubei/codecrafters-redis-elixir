@@ -114,14 +114,14 @@ defmodule Redis.RESP do
   defp decode_array_impl(_rest, _count_remaining, _accumulator), do: :error
 
   # Recursively call decode_integer, skimming off the leftmost digit each time and accumulating all of them until we have the final number after hitting a crlf.
-  defp decode_positive_integer(data, accumulator \\ 0)
+  def decode_positive_integer(data, accumulator \\ 0)
 
-  defp decode_positive_integer(<<@crlf, rest::binary>>, accumulator), do: {:ok, accumulator, rest}
+  def decode_positive_integer(<<@crlf, rest::binary>>, accumulator), do: {:ok, accumulator, rest}
 
-  defp decode_positive_integer(<<digit, rest::binary>>, accumulator) when digit in ?0..?9,
+  def decode_positive_integer(<<digit, rest::binary>>, accumulator) when digit in ?0..?9,
     do: decode_positive_integer(rest, accumulator * 10 + (digit - ?0))
 
-  defp decode_positive_integer(_data, _accumulator), do: :error
+  def decode_positive_integer(_data, _accumulator), do: :error
 
   # To decode a simple string, just keep grabbing bytes until you run into crlf.
   defp decode_simple_string(input), do: until_crlf(input)
