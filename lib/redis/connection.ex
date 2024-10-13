@@ -83,7 +83,7 @@ defmodule Redis.Connection do
   end
 
   # TODO handle incomplete messages.
-  defp handle_new_data(%__MODULE__{socket: socket, send_fn: send_fn} = state) do
+  defp handle_new_data(%__MODULE__{} = state) do
     case state.buffer do
       # Done, nothing more to handle.
       "" ->
@@ -91,13 +91,11 @@ defmodule Redis.Connection do
 
       _ ->
         case RESP.decode(state.buffer) do
-          # If we can decode this request, then handle it and make any necessary replies, then recurse in case the buffer has more data to process.
+          # If we can decode this request, then handle it, then recurse in case the buffer has more data to process.
           {:ok, decoded, rest} ->
             # TODO handle case insensitivity
-            {new_state, replies} = handle_request(state, decoded)
-            Enum.map(replies, fn reply -> send_fn.(socket, reply) end)
-            state = put_in(new_state.buffer, rest)
-            handle_new_data(state)
+            new_state = handle_request(state, decoded)
+            handle_new_data(put_in(new_state.buffer, rest))
 
           # If we cannot decode this request, then check if it's an RDB transfer that we're expecting and process it.
           :error ->
@@ -115,36 +113,47 @@ defmodule Redis.Connection do
     end
   end
 
-  # Return the new state and a list of replies (could be empty).
-  @spec handle_request(%__MODULE__{}, list(binary) | binary()) :: {%__MODULE__{}, list(binary())}
+  # Return the new state after handling the request (possibly by replying over this Connection or other Connections).
+  @spec handle_request(%__MODULE__{}, list(binary) | binary()) :: %__MODULE__{}
+
   # Always reply to any PING with a PONG. But also handle the case when this could be the start of a handshake from a replica to us (if we're master).
   defp handle_request(state, ["PING"]) do
-    new_state =
-      if state.handshake_status == :not_started and state.role == :master do
-        %__MODULE__{state | handshake_status: :ping_received}
-      else
-        state
-      end
+    :ok = send_message(state, simple_string_request("PONG"))
 
-    {new_state, [simple_string_request("PONG")]}
+    if state.handshake_status == :not_started and state.role == :master do
+      %__MODULE__{state | handshake_status: :ping_received}
+    else
+      state
+    end
   end
 
   # Echo back the args if given a PING with args. Do not treat this as the start of a handshake.
-  defp handle_request(state, ["PING", arg]), do: {state, [bulk_string_request(arg)]}
+  defp handle_request(state, ["PING", arg]) do
+    :ok = send_message(state, bulk_string_request(arg))
+    state
+  end
 
   # Echo back the args in our reply.
-  defp handle_request(state, ["ECHO", arg]), do: {state, [bulk_string_request(arg)]}
+  defp handle_request(state, ["ECHO", arg]) do
+    :ok = send_message(state, bulk_string_request(arg))
+    state
+  end
 
   # Get the requested key's value from our key-value store and make that our reply.
   defp handle_request(state, ["GET", arg]) do
     value = Redis.KeyValueStore.get(arg) || ""
-    {state, [bulk_string_request(value)]}
+    :ok = send_message(state, bulk_string_request(value))
+    state
   end
 
   # Set the key and value in our key-value store and reply with OK.
   defp handle_request(state, ["SET", key, value]) do
+    # TODO handle retries or errors and somehow revert state maybe?
     Redis.KeyValueStore.set(key, value)
-    {state, [simple_string_request("OK")]}
+    :ok = send_message(state, simple_string_request("OK"))
+
+    # TODO send relay updates to replicas
+    state
   end
 
   # Set with expiry specified. Only handling the "px" case for now (relative expiry in milliseconds).
@@ -160,35 +169,41 @@ defmodule Redis.Connection do
       System.os_time(:millisecond) + String.to_integer(relative_timestamp_milliseconds)
 
     Redis.KeyValueStore.set(key, value, expiry_timestamp_epoch_ms)
-    {state, [simple_string_request("OK")]}
+    :ok = send_message(state, simple_string_request("OK"))
+
+    # TODO send relay updates to replicas
+    state
   end
 
   # Reply with the contents of all the ServerInfo sections we have.
   defp handle_request(state, ["INFO"]) do
-    {state,
-     [bulk_string_request(Redis.ServerInfo.to_string(ServerState.get_state().server_info))]}
+    server_info_string = Redis.ServerInfo.to_string(ServerState.get_state().server_info)
+    :ok = send_message(state, bulk_string_request(server_info_string))
+    state
   end
 
   # Reply with the contents of the specified ServerInfo section.
   defp handle_request(state, ["INFO" | rest]) do
-    {state,
-     [bulk_string_request(Redis.ServerInfo.to_string(ServerState.get_state().server_info, rest))]}
+    server_info_string = Redis.ServerInfo.to_string(ServerState.get_state().server_info, rest)
+    :ok = send_message(state, bulk_string_request(server_info_string))
+    state
   end
 
   ## Replies to handshake messages if we're a replica.
 
   # If we get a simple string PONG back and we're a replica and we're expecting this reply, continue the handshake by sending the first replconf message.
   defp handle_request(%__MODULE__{role: :slave, handshake_status: :ping_sent} = state, "PONG") do
-    new_state = put_in(state.handshake_status, :replconf_one_sent)
+    :ok =
+      send_message(
+        state,
+        array_request([
+          "REPLCONF",
+          "listening-port",
+          Integer.to_string(ServerState.get_state().cli_config.port)
+        ])
+      )
 
-    {new_state,
-     [
-       array_request([
-         "REPLCONF",
-         "listening-port",
-         Integer.to_string(ServerState.get_state().cli_config.port)
-       ])
-     ]}
+    put_in(state.handshake_status, :replconf_one_sent)
   end
 
   # If we get a simple string OK back and we're a replica and we just sent the first replconf, continue the handshake by sending the second replconf message.
@@ -196,8 +211,13 @@ defmodule Redis.Connection do
          %__MODULE__{role: :slave, handshake_status: :replconf_one_sent} = state,
          "OK"
        ) do
-    new_state = put_in(state.handshake_status, :replconf_two_sent)
-    {new_state, [array_request(["REPLCONF", "capa", "psync2"])]}
+    :ok =
+      send_message(
+        state,
+        array_request(["REPLCONF", "capa", "psync2"])
+      )
+
+    put_in(state.handshake_status, :replconf_two_sent)
   end
 
   # If we get a simple string OK back and we're a replica and we just sent the second replconf, continue the handshake by sending the PSYNC message.
@@ -205,8 +225,13 @@ defmodule Redis.Connection do
          %__MODULE__{role: :slave, handshake_status: :replconf_two_sent} = state,
          "OK"
        ) do
-    new_state = put_in(state.handshake_status, :psync_sent)
-    {new_state, [array_request(["PSYNC", "?", "-1"])]}
+    :ok =
+      send_message(
+        state,
+        array_request(["PSYNC", "?", "-1"])
+      )
+
+    put_in(state.handshake_status, :psync_sent)
   end
 
   # If we get a simple string FULLRESYNC back and we're a replica and we just sent the psync, continue the handshake by updating our state and not sending anything (we're awaiting the RDB transfer).
@@ -215,8 +240,7 @@ defmodule Redis.Connection do
          <<"FULLRESYNC", _rest::binary>>
        ) do
     # TODO eventually do something with the master replid given to us.
-    new_state = put_in(state.handshake_status, :awaiting_rdb)
-    {new_state, []}
+    put_in(state.handshake_status, :awaiting_rdb)
   end
 
   # NOTE: receiving the RDB file is handled above in handle_new_data since that message is not RESP-encoded.
@@ -228,8 +252,8 @@ defmodule Redis.Connection do
          %__MODULE__{role: :master, handshake_status: :ping_received} = state,
          ["REPLCONF", "listening-port", _port]
        ) do
-    new_state = put_in(state.handshake_status, :replconf_one_received)
-    {new_state, [simple_string_request("OK")]}
+    :ok = send_message(state, simple_string_request("OK"))
+    put_in(state.handshake_status, :replconf_one_received)
   end
 
   # If we get a second REPLCONF back and we're a master and we're expecting this reply, continue the handshake by replying with OK.
@@ -237,8 +261,8 @@ defmodule Redis.Connection do
          %__MODULE__{role: :master, handshake_status: :replconf_one_received} = state,
          ["REPLCONF", "capa", "psync2"]
        ) do
-    new_state = put_in(state.handshake_status, :replconf_two_received)
-    {new_state, [simple_string_request("OK")]}
+    :ok = send_message(state, simple_string_request("OK"))
+    put_in(state.handshake_status, :replconf_two_received)
   end
 
   # If we get a PSYNC back and we're a master and we're expecting this reply, finish the handshake by replying with FULLRESYNC and then the RDB file. We
@@ -247,15 +271,24 @@ defmodule Redis.Connection do
          %__MODULE__{role: :master, handshake_status: :replconf_two_received} = state,
          ["PSYNC", "?", "-1"]
        ) do
-    new_state = put_in(state.handshake_status, :connected)
     master_replid = ServerState.get_state().server_info.replication.master_replid
     first_reply = simple_string_request("FULLRESYNC #{master_replid} 0")
+    :ok = send_message(state, first_reply)
 
     # TODO for now, "reading" the RDB file is done synchronously here since it's just a hard-coded string. Eventually, creating the RDB file should be done asynchronously and then the reply created once that's ready.
     rdb_contents = Redis.RDB.get_rdb_file()
     rdb_byte_count = byte_size(rdb_contents)
     second_reply = "$#{rdb_byte_count}#{RESP.crlf()}#{rdb_contents}"
-    {new_state, [first_reply, second_reply]}
+    :ok = send_message(state, second_reply)
+
+    put_in(state.handshake_status, :connected)
+  end
+
+  defp send_message(%__MODULE__{socket: socket, send_fn: send_fn} = state, message) do
+    case send_fn.(socket, message) do
+      :ok -> :ok
+      {:error, :timeout} -> send_message(state, message)
+    end
   end
 
   defp simple_string_request(input), do: RESP.encode(input, :simple_string)
