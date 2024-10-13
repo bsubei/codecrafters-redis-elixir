@@ -88,7 +88,7 @@ defmodule Redis.RESP do
 
 
   """
-  @spec decode(binary()) :: {:ok, list(binary()) | binary(), binary()}
+  @spec decode(binary()) :: {:ok, list(binary()) | binary(), binary()} | :error
   def decode(input) when is_binary(input), do: decode_impl(input)
   defp decode_impl("*" <> rest), do: decode_array(rest)
   defp decode_impl("+" <> rest), do: decode_simple_string(rest)
@@ -96,20 +96,22 @@ defmodule Redis.RESP do
 
   defp decode_array(input) do
     # First, grab the array length.
-    {:ok, count, rest} = decode_positive_integer(input)
-    decode_array_impl(rest, count)
+    case decode_positive_integer(input) do
+      {:ok, count, rest} -> decode_array_impl(rest, count)
+      :error -> :error
+    end
   end
 
   defp decode_array_impl(data, count_remaining, accumulator \\ [])
 
-  defp decode_array_impl(rest, 0, accumulator) do
-    {:ok, accumulator, rest}
-  end
+  defp decode_array_impl(rest, 0, accumulator), do: {:ok, accumulator, rest}
 
   defp decode_array_impl(<<?$, data::binary>>, count_remaining, accumulator) do
     {:ok, this_elem, rest} = decode_bulk_string(data)
     decode_array_impl(rest, count_remaining - 1, accumulator ++ [this_elem])
   end
+
+  defp decode_array_impl(_rest, _count_remaining, _accumulator), do: :error
 
   # Recursively call decode_integer, skimming off the leftmost digit each time and accumulating all of them until we have the final number after hitting a crlf.
   defp decode_positive_integer(data, accumulator \\ 0)
@@ -119,29 +121,30 @@ defmodule Redis.RESP do
   defp decode_positive_integer(<<digit, rest::binary>>, accumulator) when digit in ?0..?9,
     do: decode_positive_integer(rest, accumulator * 10 + (digit - ?0))
 
+  defp decode_positive_integer(_data, _accumulator), do: :error
+
   # To decode a simple string, just keep grabbing bytes until you run into crlf.
   defp decode_simple_string(input), do: until_crlf(input)
 
   # Return all the bytes until the crlf.
   defp until_crlf(input, accumulator \\ "")
 
-  defp until_crlf(<<@crlf, rest::binary>>, accumulator) do
-    {:ok, accumulator, rest}
+  defp until_crlf(<<@crlf, rest::binary>>, accumulator), do: {:ok, accumulator, rest}
+
+  defp until_crlf(<<byte, rest::binary>>, accumulator) do
+    until_crlf(rest, <<accumulator::binary, byte>>)
   end
 
-  defp until_crlf(<<letter, rest::binary>>, accumulator) do
-    until_crlf(rest, <<accumulator::binary, letter>>)
-  end
+  defp until_crlf(<<>>, _accumulator), do: :error
 
   defp decode_bulk_string(input) do
-    {:ok, length, rest} = decode_positive_integer(input)
-
-    case length do
-      -1 ->
-        nil
-
-      _ ->
+    case decode_positive_integer(input) do
+      # TODO use the actual length when parsing.
+      {:ok, _length, rest} ->
         until_crlf(rest)
+
+      :error ->
+        :error
     end
   end
 end

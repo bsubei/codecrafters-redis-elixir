@@ -28,7 +28,7 @@ defmodule Redis.Connection do
   # :ping_received => the initial ping has been received and processed by us. We now identify this connection as being a replica instead of a regular client (we still process its client-like requests).
   # :replconf_one_received => the first replconf has been received and processed by us.
   # :replconf_two_received => the second replconf has been received and processed by us.
-  # :psync_received => the PSYNC has been received and processed by us. We are now sending the RDB to the replica.
+  # NOTE: there is no "psync_received" because at this point, the master considers the handshake to be complete and the replica to be :connected, because it does not expect replies to the FULLRESYNC and RDB messages.
 
   @type t :: %__MODULE__{
           socket: :gen_tcp.socket(),
@@ -90,18 +90,28 @@ defmodule Redis.Connection do
         state
 
       _ ->
-        {:ok, decoded, rest} = RESP.decode(state.buffer)
+        case RESP.decode(state.buffer) do
+          # If we can decode this request, then handle it and make any necessary replies, then recurse in case the buffer has more data to process.
+          {:ok, decoded, rest} ->
+            # TODO handle case insensitivity
+            {new_state, replies} = handle_request(state, decoded)
+            Enum.map(replies, fn reply -> send_fn.(socket, reply) end)
+            state = put_in(new_state.buffer, rest)
+            handle_new_data(state)
 
-        # TODO handle case insensitivity
-        {new_state, replies} = handle_request(state, decoded)
-        # If the request warrants any replies, send them back.
-        Enum.map(replies, fn reply -> send_fn.(socket, reply) end)
-        # Update our state in case it changed.
-        state = new_state
-
-        # If the buffer has more data to process, recurse.
-        state = put_in(state.buffer, rest)
-        handle_new_data(state)
+          # If we cannot decode this request, then check if it's an RDB transfer that we're expecting and process it.
+          :error ->
+            if String.starts_with?(state.buffer, "$") and state.role == :slave and
+                 state.handshake_status == :awaiting_rdb do
+              # TODO parse RDB file and load it in.
+              # For now, we do nothing with the RDB file. We also assume there is no more data as part of state.buffer.
+              # Just return our updated state.
+              put_in(state.handshake_status, :connected)
+            else
+              IO.puts("Got a request that we can't decode: #{state.buffer}")
+              state
+            end
+        end
     end
   end
 
@@ -209,7 +219,7 @@ defmodule Redis.Connection do
     {new_state, []}
   end
 
-  # TODO :awaiting_rdb state, read the RDB file
+  # NOTE: receiving the RDB file is handled above in handle_new_data since that message is not RESP-encoded.
 
   ## Replies to handshake messages if we're master.
 
@@ -231,12 +241,13 @@ defmodule Redis.Connection do
     {new_state, [simple_string_request("OK")]}
   end
 
-  # If we get a PSYNC back and we're a master and we're expecting this reply, continue the handshake by replying with FULLRESYNC and then the RDB file.
+  # If we get a PSYNC back and we're a master and we're expecting this reply, finish the handshake by replying with FULLRESYNC and then the RDB file. We
+  # consider the replica to be fully connected at this point, because we don't expect replies to our FULLRESYNC and RDB messages, and we can safely send replication updates after this point since the messages are in a queue.
   defp handle_request(
          %__MODULE__{role: :master, handshake_status: :replconf_two_received} = state,
          ["PSYNC", "?", "-1"]
        ) do
-    new_state = put_in(state.handshake_status, :psync_received)
+    new_state = put_in(state.handshake_status, :connected)
     master_replid = ServerState.get_state().server_info.replication.master_replid
     first_reply = simple_string_request("FULLRESYNC #{master_replid} 0")
 
