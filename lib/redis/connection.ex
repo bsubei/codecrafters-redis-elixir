@@ -140,6 +140,34 @@ defmodule Redis.Connection do
   # Return the new state after handling the request (possibly by replying over this Connection or other Connections).
   @spec handle_request(%__MODULE__{}, list(binary) | binary()) :: %__MODULE__{}
 
+  # If we receive replication updates from master, apply them but do not reply.
+  defp handle_request(
+         %__MODULE__{handshake_status: :connected_to_master} = state,
+         ["SET", key, value]
+       ) do
+    Redis.KeyValueStore.set(key, value)
+    state
+  end
+
+  # If we're a connected replica, reply to REPLCONF GETACK with the number of offset bytes.
+  defp handle_request(
+         %__MODULE__{handshake_status: :connected_to_master} = state,
+         ["REPLCONF", "GETACK", "*"]
+       ) do
+    # TODO change hardcoded number of bytes and use real one.
+    :ok = send_message(state, array_request(["REPLCONF", "ACK", "0"]))
+    state
+  end
+
+  # NOTE: the order of this function relative to the other "overloads" is important, as it's a catch-all for the cases for messages coming from master.
+  # If we're a connected replica, as a catch-all, do not reply to the messages from master unless it's a REPLCONF GETACK.
+  defp handle_request(
+         %__MODULE__{handshake_status: :connected_to_master} = state,
+         _data
+       ) do
+    state
+  end
+
   # Always reply to any PING with a PONG. But also handle the case when this could be the start of a handshake from a replica to us (if we're master).
   defp handle_request(state, ["PING"]) do
     :ok = send_message(state, simple_string_request("PONG"))
@@ -168,15 +196,6 @@ defmodule Redis.Connection do
   defp handle_request(state, ["GET", arg]) do
     value = Redis.KeyValueStore.get(arg) || ""
     :ok = send_message(state, bulk_string_request(value))
-    state
-  end
-
-  # If we receive replication updates from master, apply them but do not reply.
-  defp handle_request(
-         %__MODULE__{handshake_status: :connected_to_master} = state,
-         ["SET", key, value]
-       ) do
-    Redis.KeyValueStore.set(key, value)
     state
   end
 
