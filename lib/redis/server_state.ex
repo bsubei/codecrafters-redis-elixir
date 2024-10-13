@@ -8,11 +8,13 @@ defmodule Redis.ServerState do
   use Agent
   alias Redis.CLIConfig
   alias Redis.ServerInfo
+  alias Redis.Connection
 
   @type t :: %__MODULE__{
           cli_config: %CLIConfig{},
           server_info: %ServerInfo{},
-          connected_replicas: MapSet.t(:gen_tcp.socket())
+          # NOTE: these Connections are copied at the point when that replica became connected. i.e. some of its state may become stale (it's safe to access the socket and send_fn though).
+          connected_replicas: MapSet.t(%Connection{})
         }
   defstruct cli_config: CLIConfig, server_info: ServerInfo, connected_replicas: MapSet.new()
 

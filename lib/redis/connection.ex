@@ -147,12 +147,17 @@ defmodule Redis.Connection do
   end
 
   # Set the key and value in our key-value store and reply with OK.
-  defp handle_request(state, ["SET", key, value]) do
+  defp handle_request(state, ["SET", key, value] = request) do
     # TODO handle retries or errors and somehow revert state maybe?
     Redis.KeyValueStore.set(key, value)
     :ok = send_message(state, simple_string_request("OK"))
 
-    # TODO send relay updates to replicas
+    # Relay any updates to all connected replicas except this current Connection.
+    Enum.map(ServerState.get_state().connected_replicas, fn
+      ^state -> nil
+      replica_conn -> send_message(replica_conn, array_request(request))
+    end)
+
     state
   end
 
@@ -171,7 +176,12 @@ defmodule Redis.Connection do
     Redis.KeyValueStore.set(key, value, expiry_timestamp_epoch_ms)
     :ok = send_message(state, simple_string_request("OK"))
 
-    # TODO send relay updates to replicas
+    # Relay any updates to all connected replicas except this current Connection. Note that we don't include the expiry terms in here.
+    Enum.map(ServerState.get_state().connected_replicas, fn
+      ^state -> nil
+      replica_conn -> send_message(replica_conn, array_request(["SET", key, value]))
+    end)
+
     state
   end
 
@@ -280,6 +290,9 @@ defmodule Redis.Connection do
     rdb_byte_count = byte_size(rdb_contents)
     second_reply = "$#{rdb_byte_count}#{RESP.crlf()}#{rdb_contents}"
     :ok = send_message(state, second_reply)
+
+    # Mark this replica as connected and ready to receive write updates.
+    ServerState.add_connected_replica(state)
 
     put_in(state.handshake_status, :connected)
   end
