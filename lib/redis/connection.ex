@@ -81,6 +81,7 @@ defmodule Redis.Connection do
   end
 
   # TODO handle incomplete messages.
+  @spec handle_new_data(%__MODULE__{}) :: %__MODULE__{}
   defp handle_new_data(%__MODULE__{} = state) do
     case state.buffer do
       # Done, nothing more to handle.
@@ -92,6 +93,7 @@ defmodule Redis.Connection do
     end
   end
 
+  @spec handle_new_data_impl(%__MODULE__{}) :: {%__MODULE__{}, binary()}
   defp handle_new_data_impl(%__MODULE__{} = state) do
     # Handle the special case of reading the incoming RDB file (which is not RESP encoded).
     {new_state, rest} =
@@ -116,9 +118,20 @@ defmodule Redis.Connection do
         end
       end
 
+    # If we are a replica connected to master, update the byte offset based on the raw message contents after we're done handling this request.
+    case state.handshake_status do
+      :connected_to_master ->
+        ServerState.add_byte_offset_count(byte_size(state.buffer) - byte_size(rest))
+
+      _ ->
+        nil
+    end
+
+    # Recurse to handle more data.
     handle_new_data(put_in(new_state.buffer, rest))
   end
 
+  @spec handle_incoming_rdb_dump(%__MODULE__{}) :: {%__MODULE__{}, binary()}
   defp handle_incoming_rdb_dump(%__MODULE__{} = state) do
     # Grab the length of the RDB data from the header.
     "$" <> msg_with_header = state.buffer
@@ -149,13 +162,16 @@ defmodule Redis.Connection do
     state
   end
 
-  # If we're a connected replica, reply to REPLCONF GETACK with the number of offset bytes.
+  # If we're a connected replica, reply to REPLCONF GETACK with the number of offset bytes so far (not including this request).
   defp handle_request(
          %__MODULE__{handshake_status: :connected_to_master} = state,
          ["REPLCONF", "GETACK", "*"]
        ) do
-    # TODO change hardcoded number of bytes and use real one.
-    :ok = send_message(state, array_request(["REPLCONF", "ACK", "0"]))
+    num_bytes_offset = ServerState.get_byte_offset_count()
+
+    :ok =
+      send_message(state, array_request(["REPLCONF", "ACK", Integer.to_string(num_bytes_offset)]))
+
     state
   end
 

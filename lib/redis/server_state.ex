@@ -42,4 +42,16 @@ defmodule Redis.ServerState do
   def has_connected_replica(replica) do
     Agent.get(__MODULE__, fn state -> state.connected_replicas end) |> MapSet.member?(replica)
   end
+
+  @spec get_byte_offset_count() :: integer()
+  def get_byte_offset_count() do
+    Agent.get(__MODULE__, & &1.server_info.replication.master_repl_offset)
+  end
+
+  @spec add_byte_offset_count(integer()) :: :ok
+  def add_byte_offset_count(num_bytes_to_add) do
+    Agent.update(__MODULE__, fn state ->
+      update_in(state.server_info.replication.master_repl_offset, &(&1 + num_bytes_to_add))
+    end)
+  end
 end
