@@ -83,7 +83,7 @@ defmodule Redis.ConnectionManager do
   end
 
   @impl true
-  def handle_info(:initiate_sync_handshake, %__MODULE__{} = state) do
+  def handle_info(:initiate_sync_handshake, %__MODULE__{role: role} = state) do
     master_socket = connect_to_master()
 
     # Send a PING to master to start the handshake.
@@ -91,7 +91,9 @@ defmodule Redis.ConnectionManager do
 
     # Create a connection to master and hand off the socket to the Connection process (this transfers the reply to our PING to the Connection).
     # Also, mark the handshake status to indicate that we've already started the handshake, so the Connection can handle the reply and continue the rest of the handshake.
-    {:ok, pid} = Connection.start_link(%{socket: master_socket, handshake_status: :ping_sent})
+    {:ok, pid} =
+      Connection.start_link(%{socket: master_socket, handshake_status: :ping_sent, role: role})
+
     :ok = :gen_tcp.controlling_process(master_socket, pid)
 
     {:noreply, state}

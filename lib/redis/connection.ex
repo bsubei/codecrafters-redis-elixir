@@ -76,6 +76,9 @@ defmodule Redis.Connection do
   end
 
   def handle_info({:tcp_closed, socket}, %__MODULE__{socket: socket} = state) do
+    # Remove this connection from the list of connected_replicas if it ever was in there.
+    :ok = ServerState.remove_connected_replica(state)
+
     {:stop, :normal, state}
   end
 
@@ -225,10 +228,7 @@ defmodule Redis.Connection do
     :ok = send_message(state, simple_string_request("OK"))
 
     # Relay any updates to all connected replicas except this current Connection.
-    Enum.map(ServerState.get_state().connected_replicas, fn
-      ^state -> nil
-      replica_conn -> send_message(replica_conn, array_request(request))
-    end)
+    send_message_to_connected_replicas(state, request)
 
     state
   end
@@ -249,10 +249,7 @@ defmodule Redis.Connection do
     :ok = send_message(state, simple_string_request("OK"))
 
     # Relay any updates to all connected replicas except this current Connection. Note that we don't include the expiry terms in here.
-    Enum.map(ServerState.get_state().connected_replicas, fn
-      ^state -> nil
-      replica_conn -> send_message(replica_conn, array_request(["SET", key, value]))
-    end)
+    send_message_to_connected_replicas(state, ["SET", key, value])
 
     state
   end
@@ -379,13 +376,29 @@ defmodule Redis.Connection do
     put_in(state.handshake_status, :connected_to_replica)
   end
 
-  defp send_message(%__MODULE__{socket: socket, send_fn: send_fn} = state, message) do
+  defp send_message(%__MODULE__{socket: socket, send_fn: send_fn}, message) do
+    send_message_on_socket(socket, send_fn, message)
+  end
+
+  defp send_message_on_socket(socket, send_fn, message) do
     case send_fn.(socket, message) do
       :ok -> :ok
-      {:error, :timeout} -> send_message(state, message)
+      {:error, :timeout} -> send_message_on_socket(socket, send_fn, message)
       # TODO is this actually ok in all cases?
       {:error, :closed} -> :ok
     end
+  end
+
+  defp send_message_to_connected_replicas(state, message) do
+    socket = state.socket
+
+    Enum.map(ServerState.get_state().connected_replicas, fn
+      ^socket ->
+        nil
+
+      replica_socket ->
+        send_message_on_socket(replica_socket, state.send_fn, array_request(message))
+    end)
   end
 
   defp simple_string_request(input), do: RESP.encode(input, :simple_string)
