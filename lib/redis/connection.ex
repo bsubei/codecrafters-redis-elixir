@@ -36,14 +36,17 @@ defmodule Redis.Connection do
                       :ok
                       | {:error, :closed | {:timeout, binary() | :erlang.iovec()} | :inet.posix()}),
           handshake_status: atom(),
+          # TODO the role of the server could change (replica becomes master), so we have to treat this "role" here as a cached value that might need to be updated.
+          role: atom(),
           buffer: binary()
         }
-  defstruct [:socket, :send_fn, :handshake_status, buffer: <<>>]
+  defstruct [:socket, :send_fn, :handshake_status, :role, buffer: <<>>]
 
   @spec start_link(%{
           # The socket must always be specified.
           socket: :gen_tcp.socket(),
-          handshake_status: atom()
+          handshake_status: atom(),
+          role: atom()
           # The send_fn is optional and will default to :gen_tcp.send/2 if not specified.
         }) :: GenServer.on_start()
   def start_link(init_arg) do
@@ -56,7 +59,8 @@ defmodule Redis.Connection do
       socket: Map.get(init_arg, :socket),
       # Use the :gen_tcp.send by default. This is only specified by tests.
       send_fn: Map.get(init_arg, :send_fn, &:gen_tcp.send/2),
-      handshake_status: Map.get(init_arg, :handshake_status)
+      handshake_status: Map.get(init_arg, :handshake_status),
+      role: Map.get(init_arg, :role)
     }
 
     {:ok, state}
@@ -93,7 +97,7 @@ defmodule Redis.Connection do
     end
   end
 
-  @spec handle_new_data_impl(%__MODULE__{}) :: {%__MODULE__{}, binary()}
+  @spec handle_new_data_impl(%__MODULE__{}) :: %__MODULE__{}
   defp handle_new_data_impl(%__MODULE__{} = state) do
     # Handle the special case of reading the incoming RDB file (which is not RESP encoded).
     {new_state, rest} =
@@ -185,15 +189,14 @@ defmodule Redis.Connection do
   end
 
   # Always reply to any PING with a PONG. But also handle the case when this could be the start of a handshake from a replica to us (if we're master).
+  defp handle_request(%__MODULE__{role: :master} = state, ["PING"]) do
+    :ok = send_message(state, simple_string_request("PONG"))
+    %__MODULE__{state | handshake_status: :ping_received}
+  end
+
   defp handle_request(state, ["PING"]) do
     :ok = send_message(state, simple_string_request("PONG"))
-
-    if state.handshake_status == :not_started and
-         ServerState.get_state().server_info.replication.role == :master do
-      %__MODULE__{state | handshake_status: :ping_received}
-    else
-      state
-    end
+    state
   end
 
   # Echo back the args if given a PING with args. Do not treat this as the start of a handshake.
@@ -265,6 +268,16 @@ defmodule Redis.Connection do
   defp handle_request(state, ["INFO" | rest]) do
     server_info_string = Redis.ServerInfo.to_string(ServerState.get_state().server_info, rest)
     :ok = send_message(state, bulk_string_request(server_info_string))
+    state
+  end
+
+  ## Master-only message handling.
+
+  # Wait until the timeout or until this many replicas are up-to-date, and reply with the number of replicas that are up-to-date.
+  # See https://redis.io/docs/latest/commands/wait/
+  defp handle_request(%__MODULE__{role: :master} = state, ["WAIT", "0", _timeout]) do
+    # TODO implement this. For now, always reply with 0.
+    :ok = send_message(state, integer_request("0"))
     state
   end
 
@@ -377,5 +390,6 @@ defmodule Redis.Connection do
 
   defp simple_string_request(input), do: RESP.encode(input, :simple_string)
   defp bulk_string_request(input), do: RESP.encode(input, :bulk_string)
+  defp integer_request(input), do: RESP.encode(input, :integer)
   defp array_request(input) when is_list(input), do: RESP.encode(input, :array)
 end

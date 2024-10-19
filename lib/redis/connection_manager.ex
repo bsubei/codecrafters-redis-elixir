@@ -12,8 +12,8 @@ defmodule Redis.ConnectionManager do
   alias Redis.ServerState
   alias Redis.Connection
 
-  @type t :: %__MODULE__{listen_socket: :gen_tcp.socket()}
-  defstruct [:listen_socket]
+  @type t :: %__MODULE__{listen_socket: :gen_tcp.socket(), role: atom()}
+  defstruct [:listen_socket, :role]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(options) do
@@ -24,10 +24,11 @@ defmodule Redis.ConnectionManager do
   def init(_) do
     server_state = ServerState.get_state()
     port = server_state.cli_config.port
+    role = server_state.server_info.replication.role
 
-    # TODO do we need to mark our server state as "not synced yet" so we drop client requests before we're fully synced?
+    # TODO if we're a replica, do we need to mark our server state as "not synced yet" so we drop client requests before we're fully synced?
     # Kick off the sync handshake with master since we're a replica and we need to sync.
-    case server_state.server_info.replication.role do
+    case role do
       :slave -> send(self(), :initiate_sync_handshake)
       :master -> nil
     end
@@ -47,7 +48,7 @@ defmodule Redis.ConnectionManager do
         Logger.info("Started Redis server on port #{port}")
         # Send an :accept message so we start accepting connections once we exit this init().
         send(self(), :accept)
-        {:ok, %__MODULE__{listen_socket: listen_socket}}
+        {:ok, %__MODULE__{listen_socket: listen_socket, role: role}}
 
       {:error, reason} ->
         # Abort, we can't start Redis if we can't listen to that port.
@@ -56,13 +57,15 @@ defmodule Redis.ConnectionManager do
   end
 
   @impl true
-  def handle_info(:accept, %__MODULE__{listen_socket: listen_socket} = state) do
+  def handle_info(:accept, %__MODULE__{listen_socket: listen_socket, role: role} = state) do
     # Attempt to accept incoming connections.
     case :gen_tcp.accept(listen_socket, 2_000) do
       {:ok, socket} ->
         # Create a Connection GenServer and hand over our active connection from the
         # controlling process to it.
-        {:ok, pid} = Connection.start_link(%{socket: socket, handshake_status: :not_started})
+        {:ok, pid} =
+          Connection.start_link(%{socket: socket, handshake_status: :not_started, role: role})
+
         :ok = :gen_tcp.controlling_process(socket, pid)
         # Remember to keep accepting more connections.
         send(self(), :accept)

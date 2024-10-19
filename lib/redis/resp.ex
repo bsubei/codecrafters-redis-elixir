@@ -34,9 +34,20 @@ defmodule Redis.RESP do
 
         iex> IO.iodata_to_binary(Redis.RESP.encode("", :bulk_string))
         "$-1\r\n"
+
+        iex> IO.iodata_to_binary(Redis.RESP.encode("-999", :integer))
+        ":-999\r\n"
+
+        iex> IO.iodata_to_binary(Redis.RESP.encode("42", :integer))
+        ":42\r\n"
+
+        iex> assert_raise ArgumentError, fn -> IO.iodata_to_binary(Redis.RESP.encode("foobar", :integer)) end
   """
   @spec encode([String.Chars.t()] | String.Chars.t(), atom()) :: iodata
   def encode(input, encoding_type)
+
+  def encode(input, :integer) when is_binary(input),
+    do: [?:, Integer.to_string(String.to_integer(input)), @crlf_iodata]
 
   def encode(input, :simple_string) when is_binary(input), do: [?+, input, @crlf_iodata]
 
@@ -122,6 +133,17 @@ defmodule Redis.RESP do
     do: decode_positive_integer(rest, accumulator * 10 + (digit - ?0))
 
   def decode_positive_integer(_data, _accumulator), do: :error
+
+  def decode_integer(data, accumulator \\ 0)
+
+  # If the integer starts with a negative sign, then decode the rest as a positive and slap the negative on in the end.
+  def decode_integer(<<?-, rest::binary>>, accumulator) do
+    {:ok, accumulator, rest} = decode_positive_integer(rest, accumulator)
+    {:ok, -accumulator, rest}
+  end
+
+  # Otherwise, decode it as a positive integer normally.
+  def decode_integer(data, accumulator), do: decode_positive_integer(data, accumulator)
 
   # To decode a simple string, just keep grabbing bytes until you run into crlf.
   defp decode_simple_string(input), do: until_crlf(input)
