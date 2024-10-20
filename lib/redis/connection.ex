@@ -140,15 +140,6 @@ defmodule Redis.Connection do
         end
       end
 
-    # If we are a replica connected to master, update the byte offset based on the raw message contents after we're done handling this request.
-    case state.handshake_status do
-      :connected_to_master ->
-        ServerState.add_byte_offset_count(byte_size(state.buffer) - byte_size(rest))
-
-      _ ->
-        nil
-    end
-
     # Recurse to handle more data.
     handle_new_data(put_in(new_state.buffer, rest))
   end
@@ -175,34 +166,38 @@ defmodule Redis.Connection do
   # Return the new state after handling the request (possibly by replying over this Connection or other Connections).
   @spec handle_request(%__MODULE__{}, list(binary) | binary()) :: %__MODULE__{}
 
-  ## Replica-only message handling (for replication updates).
+  ## Replica-only message handling (for replication updates). NOTE: we update our offset count based on these replication messages we get from master.
   # If we receive replication updates from master, apply them but do not reply.
   defp handle_request(
          %__MODULE__{handshake_status: :connected_to_master} = state,
-         ["SET", key, value]
+         ["SET", key, value] = request
        ) do
     Redis.KeyValueStore.set(key, value)
+    ServerState.add_byte_offset_count(get_request_encoded_length(request))
     state
   end
 
   # If we're a connected replica, reply to REPLCONF GETACK with the number of offset bytes so far (not including this request).
   defp handle_request(
          %__MODULE__{handshake_status: :connected_to_master} = state,
-         ["REPLCONF", "GETACK", "*"]
+         ["REPLCONF", "GETACK", "*"] = request
        ) do
-    # NOTE: this message itself will affect the offset count, but only after we reply. This is hackily handled in handle_new_data_impl.
     num_bytes_offset = ServerState.get_byte_offset_count()
 
     :ok =
       send_message(state, array_request(["REPLCONF", "ACK", Integer.to_string(num_bytes_offset)]))
+
+    ServerState.add_byte_offset_count(get_request_encoded_length(request))
 
     state
   end
 
   # NOTE: the order of this function relative to the other "overloads" is important, as it's a catch-all for the cases for messages coming from master.
   # If we're a connected replica, as a catch-all, do not reply to the messages from master unless it's a REPLCONF GETACK.
-  defp handle_request(%__MODULE__{handshake_status: :connected_to_master} = state, _request),
-    do: state
+  defp handle_request(%__MODULE__{handshake_status: :connected_to_master} = state, request) do
+    ServerState.add_byte_offset_count(get_request_encoded_length(request))
+    state
+  end
 
   ## Master-only message handling.
 
@@ -243,6 +238,7 @@ defmodule Redis.Connection do
     # TODO timeout of 0 means block forever
 
     # TODO send these in parallel
+    # TODO I read somewhere that I shouldn't send these if there was "no previous write operations pending". Does that mean I should check if the replica offsets are already up to date?
     # Send REPLCONF GETACK to each replica directly using send_message_on_socket. Each of them will reply
     # to their respective master-replica Connections, which updates their Connection to contain the latest offset count.
     Enum.map(Map.keys(connected_replicas), fn replica_socket ->
@@ -525,4 +521,13 @@ defmodule Redis.Connection do
 
   defp integer_request(input), do: RESP.encode(input, :integer)
   defp array_request(input) when is_list(input), do: RESP.encode(input, :array)
+
+  defp get_request_encoded_length(request) do
+    case request do
+      [_ | _] ->
+        IO.iodata_length(array_request(request))
+
+        # TODO support other kinds of requests later. Right now I don't expect there to be other types used.
+    end
+  end
 end
