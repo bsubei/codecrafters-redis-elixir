@@ -40,10 +40,10 @@ defmodule Redis.Connection do
           role: atom(),
           # If this Connection is between a master (us) and a replica (i.e. the handshake_status is :connected_to_replica), this field
           # stores the latest replication offset that the replica has informed us of when we asked it with "REPLCONF GETACK".
-          replica_offset_count: integer() | nil,
+          replica_offset_count: integer(),
           buffer: binary()
         }
-  defstruct [:socket, :send_fn, :handshake_status, :role, replica_offset_count: nil, buffer: <<>>]
+  defstruct [:socket, :send_fn, :handshake_status, :role, replica_offset_count: 0, buffer: <<>>]
 
   @spec start_link(%{
           # The socket must always be specified.
@@ -133,7 +133,9 @@ defmodule Redis.Connection do
 
           # If we cannot decode this request, then check if it's an RDB transfer that we're expecting and process it.
           :error ->
-            IO.puts("Got a request that we can't decode: #{state.buffer}. Just dropping it...")
+            Logger.error(
+              "Got a request that we can't decode: #{state.buffer}. Just dropping it..."
+            )
 
             # Drop everything in the buffer since we can't process this message.
             {state, ""}
@@ -158,7 +160,7 @@ defmodule Redis.Connection do
         {put_in(state.handshake_status, :connected_to_master), rest}
 
       :error ->
-        IO.puts("Unable to parse RDB length in header! Dropping message...")
+        Logger.error("Unable to parse RDB length in header! Dropping message...")
         {state, ""}
     end
   end
@@ -199,7 +201,7 @@ defmodule Redis.Connection do
     state
   end
 
-  ## Master-only message handling.
+  ## Master-only message handling. Every time we send something to the replica, we also add to our repl offset (and so does the replica if it receives these).
 
   # In the master-replica connections, handle REPLCONF ACK replies and store this offset so we know how up-to-date this replica is. These replica offsets will be used by the WAIT command.
   defp handle_request(%__MODULE__{handshake_status: :connected_to_replica} = state, [
@@ -232,39 +234,51 @@ defmodule Redis.Connection do
 
     connected_replicas = server_state.connected_replicas
 
-    # TODO actually the master's (our) offset is never updated. I only implemented updating it for the replica's connection to master.
+    # This is the repl offset that we expect the replicas to have if they are "up-to-date".
     current_master_offset = server_state.server_info.replication.master_repl_offset
 
-    # TODO timeout of 0 means block forever
+    num_up_to_date_replicas =
+      Enum.map(Map.values(connected_replicas), fn replica_conn_pid ->
+        GenServer.call(replica_conn_pid, :get_repl_offset)
+      end)
+      |> Enum.count(&(&1 == current_master_offset))
 
-    # TODO send these in parallel
-    # TODO I read somewhere that I shouldn't send these if there was "no previous write operations pending". Does that mean I should check if the replica offsets are already up to date?
-    # Send REPLCONF GETACK to each replica directly using send_message_on_socket. Each of them will reply
-    # to their respective master-replica Connections, which updates their Connection to contain the latest offset count.
-    Enum.map(Map.keys(connected_replicas), fn replica_socket ->
-      send_message_on_socket(
-        replica_socket,
-        state.send_fn,
-        array_request(["REPLCONF", "GETACK", "*"])
-      )
-    end)
+    # Check if the replicas are already up to date (nothing has been sent since the last time we checked).
+    if num_up_to_date_replicas >= num_required_replicas do
+      :ok = send_message(state, integer_request(num_up_to_date_replicas))
+    else
+      # Otherwise, we have to fetch the latest replica offsets and checking again.
+      # TODO timeout of 0 means block forever, handle that.
+      # TODO consider sending these in parallel using spawn() or Task.async_stream().
+      # Send REPLCONF GETACK to each replica directly using send_message_on_socket. Each of them will reply
+      # to their respective master-replica Connections, which updates their Connection to contain the latest offset count.
+      getack_request = ["REPLCONF", "GETACK", "*"]
 
-    # Until the timeout hits, keep reading the replica offsets until we have the minimum required number of replicas reach the required master repl offset.
-    case wait_for_num_replicas_to_reach_offset(
-           Map.values(connected_replicas),
-           num_required_replicas,
-           current_master_offset,
-           expiry_timestamp_epoch_ms,
-           0
-         ) do
-      # Actually reply with the result either way, even if we time out.
-      {:ok, num_up_to_date_replicas} ->
-        IO.puts("WE GOT #{num_up_to_date_replicas}/#{num_required_replicas}!!!")
-        :ok = send_message(state, integer_request(num_up_to_date_replicas))
+      Enum.map(Map.keys(connected_replicas), fn replica_socket ->
+        send_message_on_socket(
+          replica_socket,
+          state.send_fn,
+          array_request(getack_request)
+        )
+      end)
 
-      {:timeout, num_up_to_date_replicas} ->
-        IO.puts("TIME OUT! WE ONLY GOT #{num_up_to_date_replicas}/#{num_required_replicas}!!!")
-        :ok = send_message(state, integer_request(num_up_to_date_replicas))
+      # Until the timeout hits, keep reading the replica offsets until we have the minimum required number of replicas reach the required master repl offset.
+      case wait_for_num_replicas_to_reach_offset(
+             Map.values(connected_replicas),
+             num_required_replicas,
+             current_master_offset,
+             expiry_timestamp_epoch_ms,
+             0
+           ) do
+        # Actually reply with the result either way, even if we time out.
+        {:ok, num_up_to_date_replicas} ->
+          :ok = send_message(state, integer_request(num_up_to_date_replicas))
+
+        {:timeout, num_up_to_date_replicas} ->
+          :ok = send_message(state, integer_request(num_up_to_date_replicas))
+      end
+
+      ServerState.add_byte_offset_count(get_request_encoded_length(getack_request))
     end
 
     state
@@ -405,20 +419,24 @@ defmodule Redis.Connection do
     Redis.KeyValueStore.set(key, value)
     :ok = send_message(state, simple_string_request("OK"))
 
-    # Relay any updates to all connected replicas except this current Connection.
+    # Relay any updates to all connected replicas except this current Connection, and make sure to add it to our repl offset.
     send_message_to_connected_replicas(state, request)
+    ServerState.add_byte_offset_count(get_request_encoded_length(request))
 
     state
   end
 
   # Set with expiry specified. Only handling the "px" case for now (relative expiry in milliseconds).
-  defp handle_request(state, [
-         "SET",
-         key,
-         value,
-         "px",
-         relative_timestamp_milliseconds
-       ]) do
+  defp handle_request(
+         state,
+         [
+           "SET",
+           key,
+           value,
+           "px",
+           relative_timestamp_milliseconds
+         ] = request
+       ) do
     # Get the epoch timestamp using the relative requested expiry. i.e. The expiry epoch/unix time is = now + provided expiry timestamp.
     expiry_timestamp_epoch_ms =
       System.os_time(:millisecond) + String.to_integer(relative_timestamp_milliseconds)
@@ -428,6 +446,7 @@ defmodule Redis.Connection do
 
     # Relay any updates to all connected replicas except this current Connection. Note that we don't include the expiry terms in here.
     send_message_to_connected_replicas(state, ["SET", key, value])
+    ServerState.add_byte_offset_count(get_request_encoded_length(request))
 
     state
   end
@@ -471,7 +490,7 @@ defmodule Redis.Connection do
         Enum.map(replica_conn_pids, fn replica_conn_pid ->
           GenServer.call(replica_conn_pid, :get_repl_offset)
         end)
-        |> Enum.count(&(&1 >= desired_master_offset))
+        |> Enum.count(&(&1 == desired_master_offset))
 
       # Keep trying if we don't have enough up-to-date offsets.
       if num_up_to_date_replicas_so_far < num_required_replicas do
@@ -494,10 +513,15 @@ defmodule Redis.Connection do
 
   defp send_message_on_socket(socket, send_fn, message) do
     case send_fn.(socket, message) do
-      :ok -> :ok
-      {:error, :timeout} -> send_message_on_socket(socket, send_fn, message)
+      :ok ->
+        :ok
+
+      {:error, :timeout} ->
+        send_message_on_socket(socket, send_fn, message)
+
       # TODO is this actually ok in all cases?
-      {:error, :closed} -> :ok
+      {:error, :closed} ->
+        :ok
     end
   end
 
