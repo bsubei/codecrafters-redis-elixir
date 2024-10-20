@@ -35,7 +35,7 @@ defmodule Redis.Application do
        %Redis.ServerState{
          cli_config: cli_config,
          server_info: server_info,
-         connected_replicas: MapSet.new()
+         connected_replicas: %{}
        }},
       # Start listening to incoming connections from clients / replicas, also initiate the sync handshake with master if we're a replica.
       {Redis.ConnectionManager, %{}}

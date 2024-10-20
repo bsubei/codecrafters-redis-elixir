@@ -13,10 +13,10 @@ defmodule Redis.ServerState do
   @type t :: %__MODULE__{
           cli_config: %CLIConfig{},
           server_info: %ServerInfo{},
-          # NOTE: these Connections are copied at the point when that replica became connected. i.e. some of its state may become stale (it's safe to access the socket and send_fn though).
-          connected_replicas: MapSet.t(:gen_tcp.socket())
+          connected_replicas: %{:gen_tcp.socket() => pid()}
         }
-  defstruct cli_config: CLIConfig, server_info: ServerInfo, connected_replicas: MapSet.new()
+
+  defstruct cli_config: CLIConfig, server_info: ServerInfo, connected_replicas: %{}
 
   @spec start_link(%__MODULE__{}) :: Agent.on_start()
   def start_link(init_data), do: Agent.start_link(fn -> init_data end, name: __MODULE__)
@@ -31,15 +31,13 @@ defmodule Redis.ServerState do
     Agent.update(__MODULE__, fn _ -> new_state end)
   end
 
-  @spec add_connected_replica(%Connection{}) :: :ok
-  def add_connected_replica(replica) do
+  @spec add_connected_replica(%Connection{}, pid()) :: :ok
+  def add_connected_replica(replica, replica_pid) do
     Agent.update(__MODULE__, fn state ->
       state =
-        update_in(state.connected_replicas, fn replicas ->
-          MapSet.put(replicas, replica.socket)
-        end)
+        update_in(state.connected_replicas, &Map.put(&1, replica.socket, replica_pid))
 
-      put_in(state.server_info.replication.connected_slaves, Enum.count(state.connected_replicas))
+      put_in(state.server_info.replication.connected_slaves, map_size(state.connected_replicas))
     end)
   end
 
@@ -47,18 +45,17 @@ defmodule Redis.ServerState do
   def remove_connected_replica(replica) do
     Agent.update(__MODULE__, fn state ->
       state =
-        update_in(state.connected_replicas, fn replicas ->
-          MapSet.delete(replicas, replica.socket)
+        update_in(state.connected_replicas, fn replicas_map ->
+          Map.delete(replicas_map, replica.socket)
         end)
 
-      put_in(state.server_info.replication.connected_slaves, Enum.count(state.connected_replicas))
+      put_in(state.server_info.replication.connected_slaves, map_size(state.connected_replicas))
     end)
   end
 
   @spec has_connected_replica(:gen_tcp.socket()) :: boolean()
   def has_connected_replica(replica) do
-    Agent.get(__MODULE__, fn state -> state.connected_replicas end)
-    |> MapSet.member?(replica.socket)
+    Agent.get(__MODULE__, fn state -> Map.has_key?(state.connected_replicas, replica.socket) end)
   end
 
   @spec get_byte_offset_count() :: integer()

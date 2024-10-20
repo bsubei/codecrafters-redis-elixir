@@ -33,8 +33,10 @@ defmodule Redis.ConnectionManager do
       :master -> nil
     end
 
+    # TODO I might need to use the non-default socket backend to avoid the send/2 calls being asynchronous if the OS socket buffers are overfilled.
     listen_options = [
       :binary,
+      # TODO consider using :once.
       active: true,
       exit_on_close: false,
       reuseaddr: true,
@@ -116,10 +118,7 @@ defmodule Redis.ConnectionManager do
   defp connect_to_master() do
     [master_address, master_port] = ServerState.get_state().cli_config.replicaof |> String.split()
 
-    opts = [
-      :binary,
-      active: true
-    ]
+    opts = [:binary, active: true]
 
     case :gen_tcp.connect(
            String.to_charlist(master_address),
