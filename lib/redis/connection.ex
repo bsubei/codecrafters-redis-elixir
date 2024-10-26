@@ -31,6 +31,7 @@ defmodule Redis.Connection do
   # :replconf_two_received => the second replconf has been received and processed by us.
   # :connected_to_replica => the handshake has concluded and this connection is the replication connection with the replica. We will send replication updates to the replica after this point.
 
+  @enforce_keys [:socket, :send_fn, :handshake_status, :role]
   @type t :: %__MODULE__{
           socket: :gen_tcp.socket(),
           send_fn: (:gen_tcp.socket(), iodata() ->
@@ -63,8 +64,8 @@ defmodule Redis.Connection do
       socket: Map.get(init_arg, :socket),
       # Use the :gen_tcp.send by default. This is only specified by tests.
       send_fn: Map.get(init_arg, :send_fn, &:gen_tcp.send/2),
-      handshake_status: Map.get(init_arg, :handshake_status),
-      role: Map.get(init_arg, :role)
+      handshake_status: Map.get(init_arg, :handshake_status, :not_started),
+      role: Map.get(init_arg, :role, :master)
     }
 
     {:ok, state}
@@ -408,15 +409,17 @@ defmodule Redis.Connection do
   end
 
   # Get the requested key's value from our key-value store and make that our reply.
-  defp handle_request(state, ["GET", arg]) do
+  defp handle_request(state, ["GET", key]) do
     # Note that replicas don't bother checking for expiry because the master will tell them to expire entries instead.
-    value =
+    get_func =
       case state.role do
-        :master -> KeyValueStore.get(arg) || ""
-        :slave -> KeyValueStore.get(arg, :no_expiry) || ""
+        :master -> &KeyValueStore.get(&1)
+        :slave -> &KeyValueStore.get(&1, :no_expiry)
       end
 
-    :ok = send_message(state, bulk_string_request(value))
+    value = get_func.(key)
+    data = if value, do: value.data, else: ""
+    :ok = send_message(state, bulk_string_request(data))
     state
   end
 
@@ -469,6 +472,20 @@ defmodule Redis.Connection do
   defp handle_request(state, ["INFO" | rest]) do
     server_info_string = Redis.ServerInfo.to_string(ServerState.get_state().server_info, rest)
     :ok = send_message(state, bulk_string_request(server_info_string))
+    state
+  end
+
+  defp handle_request(state, ["TYPE", key]) do
+    get_func =
+      case state.role do
+        :master -> &KeyValueStore.get(&1)
+        :slave -> &KeyValueStore.get(&1, :no_expiry)
+      end
+
+    value = get_func.(key)
+    type = if value, do: value.type, else: :none
+    :ok = send_message(state, simple_string_request(Atom.to_string(type)))
+
     state
   end
 
