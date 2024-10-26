@@ -9,7 +9,6 @@ defmodule Redis.KeyValueStore do
   @spec start_link(%{}) :: Agent.on_start()
   def start_link(init_data), do: Agent.start_link(fn -> init_data end, name: __MODULE__)
 
-  # TODO eventually use this on replicas (since they don't expire their own entries).
   @spec get(String.Chars.t(), :no_expiry) :: String.Chars.t() | nil
   def get(key, :no_expiry) when is_binary(key) do
     case Agent.get(__MODULE__, &Map.get(&1, key)) do

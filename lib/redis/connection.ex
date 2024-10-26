@@ -11,6 +11,7 @@ defmodule Redis.Connection do
   require Logger
   alias Redis.RESP
   alias Redis.ServerState
+  alias Redis.KeyValueStore
 
   # The handshake status must be one of these atoms:
   #
@@ -174,7 +175,7 @@ defmodule Redis.Connection do
          %__MODULE__{handshake_status: :connected_to_master} = state,
          ["SET", key, value] = request
        ) do
-    Redis.KeyValueStore.set(key, value)
+    KeyValueStore.set(key, value)
     ServerState.add_byte_offset_count(get_request_encoded_length(request))
     state
   end
@@ -408,7 +409,13 @@ defmodule Redis.Connection do
 
   # Get the requested key's value from our key-value store and make that our reply.
   defp handle_request(state, ["GET", arg]) do
-    value = Redis.KeyValueStore.get(arg) || ""
+    # Note that replicas don't bother checking for expiry because the master will tell them to expire entries instead.
+    value =
+      case state.role do
+        :master -> KeyValueStore.get(arg) || ""
+        :slave -> KeyValueStore.get(arg, :no_expiry) || ""
+      end
+
     :ok = send_message(state, bulk_string_request(value))
     state
   end
@@ -416,7 +423,7 @@ defmodule Redis.Connection do
   # Set the key and value in our key-value store and reply with OK.
   defp handle_request(state, ["SET", key, value] = request) do
     # TODO handle retries or errors and somehow revert state maybe?
-    Redis.KeyValueStore.set(key, value)
+    KeyValueStore.set(key, value)
     :ok = send_message(state, simple_string_request("OK"))
 
     # Relay any updates to all connected replicas except this current Connection, and make sure to add it to our repl offset.
@@ -441,7 +448,7 @@ defmodule Redis.Connection do
     expiry_timestamp_epoch_ms =
       System.os_time(:millisecond) + String.to_integer(relative_timestamp_milliseconds)
 
-    Redis.KeyValueStore.set(key, value, expiry_timestamp_epoch_ms)
+    KeyValueStore.set(key, value, expiry_timestamp_epoch_ms)
     :ok = send_message(state, simple_string_request("OK"))
 
     # Relay any updates to all connected replicas except this current Connection. Note that we don't include the expiry terms in here.

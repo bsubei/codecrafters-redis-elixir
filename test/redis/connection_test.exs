@@ -12,7 +12,7 @@ defmodule Redis.ConnectionTest do
       :ok
     end
 
-    {:ok, connection} = Connection.init(%{socket: make_ref(), send_fn: send_fn})
+    {:ok, connection} = Connection.init(%{socket: make_ref(), send_fn: send_fn, role: :master})
     connection
   end
 
