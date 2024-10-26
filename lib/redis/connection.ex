@@ -227,14 +227,15 @@ defmodule Redis.Connection do
          num_required_replicas,
          timeout_ms
        ]) do
-    num_required_replicas = String.to_integer(num_required_replicas)
-
     expiry_timestamp_epoch_ms =
       System.os_time(:millisecond) + String.to_integer(timeout_ms)
 
     server_state = ServerState.get_state()
 
     connected_replicas = server_state.connected_replicas
+
+    num_required_replicas = String.to_integer(num_required_replicas)
+    num_connected_replicas = map_size(connected_replicas)
 
     # This is the repl offset that we expect the replicas to have if they are "up-to-date".
     current_master_offset = server_state.server_info.replication.master_repl_offset
@@ -245,11 +246,12 @@ defmodule Redis.Connection do
       end)
       |> Enum.count(&(&1 == current_master_offset))
 
-    # Check if the replicas are already up to date (nothing has been sent since the last time we checked).
-    if num_up_to_date_replicas >= num_required_replicas do
+    # Check if all the replicas are up to date or if we have enough already (nothing has been sent since the last time we checked).
+    if num_up_to_date_replicas == num_connected_replicas or
+         num_up_to_date_replicas >= num_required_replicas do
       :ok = send_message(state, integer_request(num_up_to_date_replicas))
     else
-      # Otherwise, we have to fetch the latest replica offsets and checking again.
+      # Otherwise, we have to fetch the latest replica offsets and keep checking until the replicas are up-to-date.
       # TODO timeout of 0 means block forever, handle that.
       # TODO consider sending these in parallel using spawn() or Task.async_stream().
       # Send REPLCONF GETACK to each replica directly using send_message_on_socket. Each of them will reply
@@ -270,7 +272,7 @@ defmodule Redis.Connection do
              num_required_replicas,
              current_master_offset,
              expiry_timestamp_epoch_ms,
-             0
+             num_up_to_date_replicas
            ) do
         # Actually reply with the result either way, even if we time out.
         {:ok, num_up_to_date_replicas} ->
