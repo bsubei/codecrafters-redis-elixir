@@ -42,6 +42,9 @@ defmodule Redis.RESP do
         ":42\r\n"
 
         iex> assert_raise ArgumentError, fn -> IO.iodata_to_binary(Redis.RESP.encode("foobar", :integer)) end
+
+        iex> IO.iodata_to_binary(Redis.RESP.encode("ErRoR: WHAT DID YOU DO?!", :simple_error))
+        "-ErRoR: WHAT DID YOU DO?!\r\n"
   """
   @spec encode([String.Chars.t()] | String.Chars.t(), atom()) :: iodata
   def encode(input, encoding_type)
@@ -99,12 +102,17 @@ defmodule Redis.RESP do
       iex> Redis.RESP.decode("*2\r\n$2\r\nOK\r\n$3\r\nbye\r\nleftovercrud")
       {:ok, ["OK", "bye"], "leftovercrud"}
 
+      iex> Redis.RESP.decode("-ERR please don't do that\r\nunused")
+      {:ok, "ERR please don't do that", "unused"}
+
 
   """
   @spec decode(binary()) :: {:ok, list(binary()) | binary(), binary()} | :error
   def decode(input) when is_binary(input), do: decode_impl(input)
   defp decode_impl("*" <> rest), do: decode_array(rest)
   defp decode_impl("+" <> rest), do: decode_simple_string(rest)
+  # NOTE: decoding simple errors is the same as simple strings once we strip off the "-" prefix.
+  defp decode_impl("-" <> rest), do: decode_simple_string(rest)
   defp decode_impl("$" <> rest), do: decode_bulk_string(rest)
 
   defp decode_array(input) do
