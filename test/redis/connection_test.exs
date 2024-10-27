@@ -119,21 +119,41 @@ defmodule Redis.ConnectionTest do
       xadd_request =
         IO.iodata_to_binary(
           RESP.encode(
-            ["XADD", "the_stream_key", "fake_entry_id", "foo", "bar", "baz", "quirk"],
+            ["XADD", "the_stream_key", "1234-0", "foo", "bar", "baz", "quirk"],
             :array
           )
         )
 
-      entry_id_reply = RESP.encode("fake_entry_id", :bulk_string)
+      entry_id_reply = RESP.encode("1234-0", :bulk_string)
       check_request_response(connection, xadd_request, entry_id_reply)
-      # This stream should exist in our KeyValueStore.
+      # This stream should now exist in our KeyValueStore.
       %Redis.Value{data: stream, type: :stream, expiry_timestamp_epoch_ms: nil} =
         KeyValueStore.get("the_stream_key", :no_expiry)
 
       assert length(stream.entries) == 1
 
-      assert %Redis.Stream.Entry{id: "fake_entry_id", data: %{"foo" => "bar", "baz" => "quirk"}} =
-               Redis.Stream.get_entry_id(stream, "fake_entry_id")
+      assert %Redis.Stream.Entry{id: "1234-0", data: %{"foo" => "bar", "baz" => "quirk"}} =
+               Redis.Stream.get_entry_id(stream, "1234-0")
+
+      # Let's send another entry to the same stream!
+      xadd_request =
+        IO.iodata_to_binary(
+          RESP.encode(
+            ["XADD", "the_stream_key", "1235-0", "foo", "42"],
+            :array
+          )
+        )
+
+      entry_id_reply = RESP.encode("1235-0", :bulk_string)
+      check_request_response(connection, xadd_request, entry_id_reply)
+      # This stream should now have two entries.
+      %Redis.Value{data: stream, type: :stream, expiry_timestamp_epoch_ms: nil} =
+        KeyValueStore.get("the_stream_key", :no_expiry)
+
+      assert length(stream.entries) == 2
+
+      assert %Redis.Stream.Entry{id: "1235-0", data: %{"foo" => "42"}} =
+               Redis.Stream.get_entry_id(stream, "1235-0")
     end
   end
 end

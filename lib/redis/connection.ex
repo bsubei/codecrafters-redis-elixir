@@ -503,26 +503,36 @@ defmodule Redis.Connection do
 
     entry = %Redis.Stream.Entry{id: entry_id, data: stream_data}
 
-    updated_stream =
+    # Add this entry to the stream (creating a new stream if needed).
+    stream_or_error =
       case KeyValueStore.get(stream_key, :no_expiry) do
-        # Create a new stream with this key.
         nil ->
           %Redis.Stream{entries: [entry]}
 
-        # Append to this existing stream.
         value ->
-          Redis.Stream.append(value.data, entry)
+          Redis.Stream.add(value.data, entry)
       end
 
-    KeyValueStore.set(stream_key, updated_stream)
+    case stream_or_error do
+      :error_not_latest ->
+        error_message =
+          "ERR The ID specified in XADD is equal or smaller than the target stream top item"
 
-    # Reply with the entry id.
-    :ok = send_message(state, bulk_string_request(entry_id))
+        :ok = send_message(state, simple_error_request(error_message))
 
-    # TODO relay to replicas, is this actually what we send?
-    send_message_to_connected_replicas(state, request)
-    # TODO add offset byte count
-    ServerState.add_byte_offset_count(get_request_encoded_length(request))
+      :error_zero ->
+        error_message = "ERR The ID specified in XADD must be greater than 0-0"
+        :ok = send_message(state, simple_error_request(error_message))
+
+      stream ->
+        KeyValueStore.set(stream_key, stream)
+        :ok = send_message(state, bulk_string_request(entry_id))
+
+        # TODO relay to replicas, is this actually what we send?
+        send_message_to_connected_replicas(state, request)
+        # TODO add offset byte count
+        ServerState.add_byte_offset_count(get_request_encoded_length(request))
+    end
 
     state
   end
@@ -601,6 +611,7 @@ defmodule Redis.Connection do
 
   defp simple_string_request(input), do: RESP.encode(input, :simple_string)
   defp bulk_string_request(input), do: RESP.encode(input, :bulk_string)
+  defp simple_error_request(input), do: RESP.encode(input, :simple_error)
 
   defp integer_request(input) when is_integer(input),
     do: integer_request(Integer.to_string(input))

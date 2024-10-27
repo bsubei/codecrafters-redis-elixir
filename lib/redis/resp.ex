@@ -51,6 +51,8 @@ defmodule Redis.RESP do
 
   def encode(input, :simple_string) when is_binary(input), do: [?+, input, @crlf_iodata]
 
+  def encode(input, :simple_error) when is_binary(input), do: [?-, input, @crlf_iodata]
+
   def encode("", :bulk_string), do: [?$, "-1", @crlf_iodata]
 
   def encode(text, :bulk_string),

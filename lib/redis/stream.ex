@@ -1,14 +1,15 @@
+defmodule Redis.Stream.Entry do
+  @enforce_keys [:id]
+  @type t :: %__MODULE__{id: binary(), data: %{}}
+  defstruct [:id, data: %{}]
+end
+
 defmodule Redis.Stream do
   @moduledoc """
   This module defines a "stream" that is stored in a KeyValueStore. A stream contains multiple entries, each entry has an id and any number of key-value fields.
   """
-  defmodule Entry do
-    @enforce_keys [:id]
-    @type t :: %__MODULE__{id: binary(), data: %{}}
-    defstruct [:id, data: %{}]
-  end
 
-  # TODO for now just use a list, but eventually use a data structure that is more optimized for O(1) random-access lookup AND O(1)-ish range lookups
+  # TODO for now just use a list in reversed order (because prepending is O(1) in Elixir), but eventually use a data structure that is more optimized for O(1) random-access lookup AND O(1)-ish range lookups
   @enforce_keys [:entries]
   @type t :: %__MODULE__{entries: list(%Redis.Stream.Entry{})}
   defstruct [:entries]
@@ -27,11 +28,62 @@ defmodule Redis.Stream do
     end
   end
 
-  # TODO we don't guarantee unique entry IDs at this point.
-  @spec append(%__MODULE__{}, %Redis.Stream.Entry{}) :: %__MODULE__{}
-  def append(state, entry) do
-    update_in(state.entries, fn
-      entries -> [entries | entry]
-    end)
+  @spec add(%__MODULE__{}, %Redis.Stream.Entry{}) ::
+          %__MODULE__{} | :error_not_latest | :error_zero
+  def add(state, new_entry) do
+    case validate_entry_to_add(state, new_entry) do
+      :ok ->
+        # NOTE: we prepend the latest entry to the beginning because we're using Elixir linked lists.
+        update_in(state.entries, &[new_entry | &1])
+
+      error ->
+        error
+    end
+  end
+
+  @spec timestamp_ms_from_entry_id(binary()) :: integer()
+  defp timestamp_ms_from_entry_id(entry_id) do
+    String.split(entry_id, "-") |> List.first() |> String.to_integer()
+  end
+
+  @spec sequence_number_from_entry_id(binary()) :: integer()
+  defp sequence_number_from_entry_id(entry_id) do
+    String.split(entry_id, "-") |> List.last() |> String.to_integer()
+  end
+
+  @spec entry_id_greater_than?(binary(), binary()) :: boolean()
+  defp entry_id_greater_than?(left_entry_id, right_entry_id) do
+    {left_timestamp, left_sequence_number} =
+      {timestamp_ms_from_entry_id(left_entry_id), sequence_number_from_entry_id(left_entry_id)}
+
+    {right_timestamp, right_sequence_number} =
+      {timestamp_ms_from_entry_id(right_entry_id), sequence_number_from_entry_id(right_entry_id)}
+
+    left_timestamp > right_timestamp or
+      (left_timestamp == right_timestamp and left_sequence_number > right_sequence_number)
+  end
+
+  @spec validate_entry_to_add(%__MODULE__{}, %Redis.Stream.Entry{}) ::
+          :ok | :error_zero | :error_not_latest
+  defp validate_entry_to_add(state, new_entry) do
+    # Validate the entry ID (must be unique and monotonically increasing).
+    latest_entry = List.first(state.entries)
+
+    cond do
+      length(state.entries) == 0 ->
+        :ok
+
+      entry_id_exists?(state, new_entry.id) ->
+        :error_not_latest
+
+      entry_id_greater_than?(new_entry.id, latest_entry.id) ->
+        :ok
+
+      new_entry.id == "0-0" ->
+        :error_zero
+
+      true ->
+        :error_not_latest
+    end
   end
 end
