@@ -12,10 +12,7 @@ defmodule Redis.KeyValueStore do
 
   @spec get(String.Chars.t(), :no_expiry) :: Value | nil
   def get(key, :no_expiry) when is_binary(key) do
-    case Agent.get(__MODULE__, &Map.get(&1, key)) do
-      nil -> nil
-      %Value{} = value -> value
-    end
+    Agent.get(__MODULE__, &Map.get(&1, key))
   end
 
   @spec get(String.Chars.t()) :: Value | nil

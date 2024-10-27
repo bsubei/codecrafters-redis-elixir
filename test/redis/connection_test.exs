@@ -111,5 +111,29 @@ defmodule Redis.ConnectionTest do
       expected_reply = RESP.encode("yum", :bulk_string)
       check_request_response(connection, get_request, expected_reply)
     end
+
+    test "sending XADD will actually create a new stream and add an entry",
+         %{
+           connection: connection
+         } do
+      xadd_request =
+        IO.iodata_to_binary(
+          RESP.encode(
+            ["XADD", "the_stream_key", "fake_entry_id", "foo", "bar", "baz", "quirk"],
+            :array
+          )
+        )
+
+      entry_id_reply = RESP.encode("fake_entry_id", :bulk_string)
+      check_request_response(connection, xadd_request, entry_id_reply)
+      # This stream should exist in our KeyValueStore.
+      %Redis.Value{data: stream, type: :stream, expiry_timestamp_epoch_ms: nil} =
+        KeyValueStore.get("the_stream_key", :no_expiry)
+
+      assert length(stream.entries) == 1
+
+      assert %Redis.Stream.Entry{id: "fake_entry_id", data: %{"foo" => "bar", "baz" => "quirk"}} =
+               Redis.Stream.get_entry_id(stream, "fake_entry_id")
+    end
   end
 end

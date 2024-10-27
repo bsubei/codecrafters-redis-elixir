@@ -4,8 +4,7 @@ defmodule Redis.Value do
   """
   @enforce_keys [:data, :type]
   @type t :: %__MODULE__{
-          # TODO figure out the actual type here
-          data: any(),
+          data: binary() | Redis.Stream.t(),
           type: atom(),
           expiry_timestamp_epoch_ms: integer() | nil
         }
@@ -22,10 +21,11 @@ defmodule Redis.Value do
 
   @spec type_of(any()) :: atom()
   def type_of(data) do
-    # TODO define all the types here
     case data do
       nil -> :none
-      _ -> :string
+      %Redis.Stream{} -> :stream
+      d when is_binary(d) -> :string
+      _ -> :unknown
     end
   end
 end

@@ -413,13 +413,12 @@ defmodule Redis.Connection do
   # Get the requested key's value from our key-value store and make that our reply.
   defp handle_request(state, ["GET", key]) do
     # Note that replicas don't bother checking for expiry because the master will tell them to expire entries instead.
-    get_func =
+    value =
       case state.role do
-        :master -> &KeyValueStore.get(&1)
-        :slave -> &KeyValueStore.get(&1, :no_expiry)
+        :master -> KeyValueStore.get(key)
+        :slave -> KeyValueStore.get(key, :no_expiry)
       end
 
-    value = get_func.(key)
     data = if value, do: value.data, else: ""
     :ok = send_message(state, bulk_string_request(data))
     state
@@ -478,15 +477,52 @@ defmodule Redis.Connection do
   end
 
   defp handle_request(state, ["TYPE", key]) do
-    get_func =
+    value =
       case state.role do
-        :master -> &KeyValueStore.get(&1)
-        :slave -> &KeyValueStore.get(&1, :no_expiry)
+        :master -> KeyValueStore.get(key)
+        :slave -> KeyValueStore.get(key, :no_expiry)
       end
 
-    value = get_func.(key)
     type = if value, do: value.type, else: :none
     :ok = send_message(state, simple_string_request(Atom.to_string(type)))
+
+    state
+  end
+
+  # TODO implement this
+  # TODO support optional arguments eventually
+  # Append a new entry to a stream and automatically create a stream key.
+  defp handle_request(_state, ["XADD", _stream_key, "*" | _rest]) do
+    :unimplemented
+  end
+
+  # Append a new entry to a stream when given an explicit stream key.
+  defp handle_request(state, ["XADD", stream_key, entry_id | rest] = request) do
+    # Validate and parse the key-value arguments, which must come in pairs.
+    stream_data = map_from_key_value_pairs(rest)
+
+    entry = %Redis.Stream.Entry{id: entry_id, data: stream_data}
+
+    updated_stream =
+      case KeyValueStore.get(stream_key, :no_expiry) do
+        # Create a new stream with this key.
+        nil ->
+          %Redis.Stream{entries: [entry]}
+
+        # Append to this existing stream.
+        value ->
+          Redis.Stream.append(value.data, entry)
+      end
+
+    KeyValueStore.set(stream_key, updated_stream)
+
+    # Reply with the entry id.
+    :ok = send_message(state, bulk_string_request(entry_id))
+
+    # TODO relay to replicas, is this actually what we send?
+    send_message_to_connected_replicas(state, request)
+    # TODO add offset byte count
+    ServerState.add_byte_offset_count(get_request_encoded_length(request))
 
     state
   end
@@ -579,5 +615,11 @@ defmodule Redis.Connection do
 
         # TODO support other kinds of requests later. Right now I don't expect there to be other types used.
     end
+  end
+
+  defp map_from_key_value_pairs(pairs) do
+    pairs
+    |> Enum.chunk_every(2)
+    |> Map.new(fn [k, v] -> {k, v} end)
   end
 end
