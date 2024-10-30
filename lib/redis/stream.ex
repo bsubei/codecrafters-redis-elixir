@@ -10,19 +10,24 @@ defmodule Redis.Stream do
   """
 
   # TODO for now just use a list in reversed order (because prepending is O(1) in Elixir), but eventually use a data structure that is more optimized for O(1) random-access lookup AND O(1)-ish range lookups
-  @enforce_keys [:entries]
   @type t :: %__MODULE__{entries: list(%Redis.Stream.Entry{})}
-  defstruct [:entries]
+  defstruct entries: []
 
-  @spec get_entry_id(%__MODULE__{}, binary()) :: %Redis.Stream.Entry{} | nil
-  def get_entry_id(state, entry_id) do
+  @spec get_entry(%__MODULE__{}, binary()) :: %Redis.Stream.Entry{} | nil
+  def get_entry(state, entry_id) do
     state.entries
     |> Enum.find(fn entry -> entry_id == entry.id end)
   end
 
+  @spec get_entry_with_timestamp_ms(%__MODULE__{}, integer()) :: %Redis.Stream.Entry{} | nil
+  def get_entry_with_timestamp_ms(state, timestamp_ms) do
+    state.entries
+    |> Enum.find(fn entry -> timestamp_ms == timestamp_ms_from_entry_id(entry.id) end)
+  end
+
   @spec entry_id_exists?(%__MODULE__{}, binary()) :: boolean()
   def entry_id_exists?(state, entry_id) do
-    case get_entry_id(state, entry_id) do
+    case get_entry(state, entry_id) do
       nil -> false
       _ -> true
     end
@@ -41,6 +46,40 @@ defmodule Redis.Stream do
     end
   end
 
+  @spec resolve_entry_id(%__MODULE__{}, binary()) :: binary()
+  def resolve_entry_id(state, "*") do
+    timestamp_ms = next_timestamp_ms(state)
+    resolve_entry_id(state, "#{timestamp_ms}-*")
+  end
+
+  # This handles the case when entry_id is either of: "<timestamp>-*" or "<timestamp>-<sequence_number>"
+  def resolve_entry_id(state, entry_id) do
+    timestamp_ms = timestamp_ms_from_entry_id(entry_id)
+
+    sequence_number =
+      case String.split(entry_id, "-") |> List.last() do
+        "*" -> next_sequence_number(state, timestamp_ms)
+        number -> number
+      end
+
+    "#{timestamp_ms}-#{sequence_number}"
+  end
+
+  defp next_timestamp_ms(_state) do
+    # TODO
+    :unimplemented
+  end
+
+  @spec next_sequence_number(%__MODULE__{}, integer) :: binary()
+  defp next_sequence_number(state, timestamp_ms) do
+    # Iterate over the entries from latest to oldest and find the first entry with this timestamp. Add one and that's the next sequence number.
+    # Otherwise, use a default of 0 (unless the timestamp is 0, in which case use 1).
+    case get_entry_with_timestamp_ms(state, timestamp_ms) do
+      nil -> if timestamp_ms == 0, do: 1, else: 0
+      latest_entry -> sequence_number_from_entry(latest_entry) + 1
+    end
+  end
+
   @spec timestamp_ms_from_entry_id(binary()) :: integer()
   defp timestamp_ms_from_entry_id(entry_id) do
     String.split(entry_id, "-") |> List.first() |> String.to_integer()
@@ -50,6 +89,9 @@ defmodule Redis.Stream do
   defp sequence_number_from_entry_id(entry_id) do
     String.split(entry_id, "-") |> List.last() |> String.to_integer()
   end
+
+  # defp timestamp_ms_from_entry(state), do: timestamp_ms_from_entry_id(state.id)
+  defp sequence_number_from_entry(state), do: sequence_number_from_entry_id(state.id)
 
   @spec entry_id_greater_than?(binary(), binary()) :: boolean()
   defp entry_id_greater_than?(left_entry_id, right_entry_id) do

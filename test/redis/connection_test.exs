@@ -133,7 +133,7 @@ defmodule Redis.ConnectionTest do
       assert length(stream.entries) == 1
 
       assert %Redis.Stream.Entry{id: "1234-0", data: %{"foo" => "bar", "baz" => "quirk"}} =
-               Redis.Stream.get_entry_id(stream, "1234-0")
+               Redis.Stream.get_entry(stream, "1234-0")
 
       # Let's send another entry to the same stream!
       xadd_request =
@@ -153,7 +153,67 @@ defmodule Redis.ConnectionTest do
       assert length(stream.entries) == 2
 
       assert %Redis.Stream.Entry{id: "1235-0", data: %{"foo" => "42"}} =
-               Redis.Stream.get_entry_id(stream, "1235-0")
+               Redis.Stream.get_entry(stream, "1235-0")
+    end
+
+    test "sending XADD with 0-* and 42-* entry ids will resolve the sequence number correctly",
+         %{
+           connection: connection
+         } do
+      foo_bar_list = ["foo", "bar", "baz", "quirk"]
+      foo_bar_map = %{"foo" => "bar", "baz" => "quirk"}
+
+      xadd_request =
+        IO.iodata_to_binary(
+          RESP.encode(
+            ["XADD", "the_stream_key", "0-*" | foo_bar_list],
+            :array
+          )
+        )
+
+      # If we XADD 0-* when the stream is empty, we should get an entry id of 0-1.
+      entry_id_reply = RESP.encode("0-1", :bulk_string)
+      check_request_response(connection, xadd_request, entry_id_reply)
+      # This stream should now exist in our KeyValueStore.
+      %Redis.Value{data: stream, type: :stream, expiry_timestamp_epoch_ms: nil} =
+        KeyValueStore.get("the_stream_key", :no_expiry)
+
+      assert length(stream.entries) == 1
+
+      assert %Redis.Stream.Entry{id: "0-1", data: ^foo_bar_map} =
+               Redis.Stream.get_entry(stream, "0-1")
+
+      # Now let's try the same entry id "0-*", it should reply with the entry id "0-2".
+      entry_id_reply = RESP.encode("0-2", :bulk_string)
+      check_request_response(connection, xadd_request, entry_id_reply)
+      # This stream should now have two entries.
+      %Redis.Value{data: stream, type: :stream, expiry_timestamp_epoch_ms: nil} =
+        KeyValueStore.get("the_stream_key", :no_expiry)
+
+      assert length(stream.entries) == 2
+
+      assert %Redis.Stream.Entry{id: "0-2", data: ^foo_bar_map} =
+               Redis.Stream.get_entry(stream, "0-2")
+
+      # Finally, if we XADD 42-*, it will resolve to the entry id 42-0.
+      xadd_request =
+        IO.iodata_to_binary(
+          RESP.encode(
+            ["XADD", "the_stream_key", "42-*" | foo_bar_list],
+            :array
+          )
+        )
+
+      entry_id_reply = RESP.encode("42-0", :bulk_string)
+      check_request_response(connection, xadd_request, entry_id_reply)
+
+      %Redis.Value{data: stream, type: :stream, expiry_timestamp_epoch_ms: nil} =
+        KeyValueStore.get("the_stream_key", :no_expiry)
+
+      assert length(stream.entries) == 3
+
+      assert %Redis.Stream.Entry{id: "42-0", data: ^foo_bar_map} =
+               Redis.Stream.get_entry(stream, "42-0")
     end
   end
 end

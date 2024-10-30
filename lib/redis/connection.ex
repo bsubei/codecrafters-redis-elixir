@@ -497,7 +497,20 @@ defmodule Redis.Connection do
   end
 
   # Append a new entry to a stream when given an explicit stream key.
-  defp handle_request(state, ["XADD", stream_key, entry_id | rest] = request) do
+  defp handle_request(state, ["XADD", stream_key, entry_id | rest]) do
+    # First resolve this entry id (i.e. handle any "*").
+    stream =
+      case KeyValueStore.get(stream_key, :no_expiry) do
+        nil -> %Redis.Stream{}
+        value -> value.data
+      end
+
+    resolved_entry_id = Redis.Stream.resolve_entry_id(stream, entry_id)
+
+    handle_request_xadd(state, ["XADD", stream_key, resolved_entry_id | rest])
+  end
+
+  defp handle_request_xadd(state, ["XADD", stream_key, entry_id | rest] = request) do
     # Validate and parse the key-value arguments, which must come in pairs.
     stream_data = map_from_key_value_pairs(rest)
 
@@ -528,9 +541,9 @@ defmodule Redis.Connection do
         KeyValueStore.set(stream_key, stream)
         :ok = send_message(state, bulk_string_request(entry_id))
 
-        # TODO relay to replicas, is this actually what we send?
+        # TODO this has the resolved entry_id (not the original request, we resolved the "*" bits). Is this what we send to the replicas?
         send_message_to_connected_replicas(state, request)
-        # TODO add offset byte count
+        # TODO add offset byte count, check exact request also
         ServerState.add_byte_offset_count(get_request_encoded_length(request))
     end
 
