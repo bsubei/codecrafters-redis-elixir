@@ -48,8 +48,8 @@ defmodule Redis.Stream do
 
   @spec resolve_entry_id(%__MODULE__{}, binary()) :: binary()
   def resolve_entry_id(state, "*") do
-    timestamp_ms = next_timestamp_ms(state)
-    resolve_entry_id(state, "#{timestamp_ms}-*")
+    time_now_ms = System.os_time(:millisecond)
+    resolve_entry_id(state, "#{time_now_ms}-*")
   end
 
   # This handles the case when entry_id is either of: "<timestamp>-*" or "<timestamp>-<sequence_number>"
@@ -65,17 +65,12 @@ defmodule Redis.Stream do
     "#{timestamp_ms}-#{sequence_number}"
   end
 
-  defp next_timestamp_ms(_state) do
-    # TODO
-    :unimplemented
-  end
-
   @spec next_sequence_number(%__MODULE__{}, integer) :: binary()
   defp next_sequence_number(state, timestamp_ms) do
     # Iterate over the entries from latest to oldest and find the first entry with this timestamp. Add one and that's the next sequence number.
     # Otherwise, use a default of 0 (unless the timestamp is 0, in which case use 1).
     case get_entry_with_timestamp_ms(state, timestamp_ms) do
-      nil -> if timestamp_ms == 0, do: 1, else: 0
+      nil -> if timestamp_ms == 0, do: "1", else: "0"
       latest_entry -> sequence_number_from_entry(latest_entry) + 1
     end
   end

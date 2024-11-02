@@ -491,11 +491,6 @@ defmodule Redis.Connection do
 
   # TODO implement this
   # TODO support optional arguments eventually
-  # Append a new entry to a stream and automatically create a stream key.
-  defp handle_request(_state, ["XADD", _stream_key, "*" | _rest]) do
-    :unimplemented
-  end
-
   # Append a new entry to a stream when given an explicit stream key.
   defp handle_request(state, ["XADD", stream_key, entry_id | rest]) do
     # First resolve this entry id (i.e. handle any "*").
