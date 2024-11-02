@@ -510,6 +510,29 @@ defmodule Redis.Connection do
     handle_request_xadd(state, ["XADD", stream_key, resolved_entry_id | rest])
   end
 
+  defp handle_request(state, ["XRANGE", stream_key, start_entry_id, end_entry_id]) do
+    case [start_entry_id, end_entry_id] do
+      ["*", _] ->
+        :error
+
+      [_, "*"] ->
+        :error
+
+      _ ->
+        # Resolve the entry ids, but only allow either "<timestamp>-*" or "<timestamp>-<sequence>". i.e. don't allow "*".
+        stream =
+          case KeyValueStore.get(stream_key, :no_expiry) do
+            nil -> %Redis.Stream{}
+            value -> value.data
+          end
+
+        resolved_start_id = Redis.Stream.resolve_entry_id(stream, start_entry_id)
+        resolved_end_id = Redis.Stream.resolve_entry_id(stream, end_entry_id)
+
+        handle_request_xrange(state, ["XRANGE", stream_key, resolved_start_id, resolved_end_id])
+    end
+  end
+
   defp handle_request_xadd(state, ["XADD", stream_key, entry_id | rest] = request) do
     # Validate and parse the key-value arguments, which must come in pairs.
     stream_data = map_from_key_value_pairs(rest)
@@ -548,6 +571,37 @@ defmodule Redis.Connection do
     end
 
     state
+  end
+
+  defp handle_request_xrange(
+         state,
+         ["XRANGE", stream_key, start_entry_id, end_entry_id]
+       ) do
+    reply_message =
+      case KeyValueStore.get(stream_key, :no_expiry) do
+        nil ->
+          bulk_string_request("")
+
+        %Redis.Value{type: :stream, data: stream} ->
+          Redis.Stream.get_entries_range(stream, start_entry_id, end_entry_id)
+          |> stream_entries_to_resp()
+
+        # TODO correctly raise errors
+        _ ->
+          :error
+      end
+
+    send_message(state, reply_message)
+  end
+
+  @spec stream_entries_to_resp(list(%Redis.Stream.Entry{})) :: iodata()
+  defp stream_entries_to_resp(entries) do
+    entries
+    |> Enum.map(fn entry ->
+      entry_values = for {k, v} <- entry.data, do: [k, v]
+      [entry.id, List.flatten(entry_values)]
+    end)
+    |> array_request()
   end
 
   ## Helpers and utility functions.

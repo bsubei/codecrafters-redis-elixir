@@ -25,6 +25,24 @@ defmodule Redis.Stream do
     |> Enum.find(fn entry -> timestamp_ms == timestamp_ms_from_entry_id(entry.id) end)
   end
 
+  @spec get_entries_range(%__MODULE__{}, binary(), binary()) :: list(%Redis.Stream.Entry{})
+  def get_entries_range(state, start_entry_id, end_entry_id) do
+    # NOTE: the start and end range here is inclusive on both ends.
+    # NOTE: we store the list of entries in reverse order (i.e. the first entry in the list is the most-recent one), which is why we go from end to start.
+    state.entries
+    # We don't want any entries that are later (more recent) than the specified end timestamp and sequence number.
+    |> Enum.drop_while(fn entry ->
+      entry_id_greater_than?(entry.id, end_entry_id)
+    end)
+    # We don't want any entries that are older (less recent) than the specified start timestamp and sequence number.
+    |> Enum.take_while(fn entry ->
+      entry_ids_equal?(entry.id, start_entry_id) or
+        entry_id_greater_than?(entry.id, start_entry_id)
+    end)
+    # Finally, reverse the list so we get the entries from start to end.
+    |> Enum.reverse()
+  end
+
   @spec entry_id_exists?(%__MODULE__{}, binary()) :: boolean()
   def entry_id_exists?(state, entry_id) do
     case get_entry(state, entry_id) do
