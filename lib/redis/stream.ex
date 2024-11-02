@@ -52,12 +52,13 @@ defmodule Redis.Stream do
     resolve_entry_id(state, "#{time_now_ms}-*")
   end
 
-  # This handles the case when entry_id is either of: "<timestamp>-*" or "<timestamp>-<sequence_number>"
+  # This handles the cases when entry_id is : "<timestamp>" or "<timestamp>-*" or "<timestamp>-<sequence_number>"
   def resolve_entry_id(state, entry_id) do
     timestamp_ms = timestamp_ms_from_entry_id(entry_id)
 
     sequence_number =
       case String.split(entry_id, "-") |> List.last() do
+        nil -> next_sequence_number(state, timestamp_ms)
         "*" -> next_sequence_number(state, timestamp_ms)
         number -> number
       end
@@ -71,7 +72,7 @@ defmodule Redis.Stream do
     # Otherwise, use a default of 0 (unless the timestamp is 0, in which case use 1).
     case get_entry_with_timestamp_ms(state, timestamp_ms) do
       nil -> if timestamp_ms == 0, do: "1", else: "0"
-      latest_entry -> sequence_number_from_entry(latest_entry) + 1
+      latest_entry -> sequence_number_from_entry_id(latest_entry.id) + 1
     end
   end
 
@@ -85,8 +86,16 @@ defmodule Redis.Stream do
     String.split(entry_id, "-") |> List.last() |> String.to_integer()
   end
 
-  # defp timestamp_ms_from_entry(state), do: timestamp_ms_from_entry_id(state.id)
-  defp sequence_number_from_entry(state), do: sequence_number_from_entry_id(state.id)
+  @spec entry_ids_equal?(binary(), binary()) :: boolean()
+  defp entry_ids_equal?(left_entry_id, right_entry_id) do
+    {left_timestamp, left_sequence_number} =
+      {timestamp_ms_from_entry_id(left_entry_id), sequence_number_from_entry_id(left_entry_id)}
+
+    {right_timestamp, right_sequence_number} =
+      {timestamp_ms_from_entry_id(right_entry_id), sequence_number_from_entry_id(right_entry_id)}
+
+    left_timestamp == right_timestamp and left_sequence_number == right_sequence_number
+  end
 
   @spec entry_id_greater_than?(binary(), binary()) :: boolean()
   defp entry_id_greater_than?(left_entry_id, right_entry_id) do

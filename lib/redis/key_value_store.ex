@@ -7,15 +7,15 @@ defmodule Redis.KeyValueStore do
   use Agent
   alias Redis.Value
 
-  @spec start_link(%{binary() => Value}) :: Agent.on_start()
+  @spec start_link(%{binary() => %Value{}}) :: Agent.on_start()
   def start_link(init_data), do: Agent.start_link(fn -> init_data end, name: __MODULE__)
 
-  @spec get(String.Chars.t(), :no_expiry) :: Value | nil
+  @spec get(String.Chars.t(), :no_expiry) :: %Value{} | nil
   def get(key, :no_expiry) when is_binary(key) do
     Agent.get(__MODULE__, &Map.get(&1, key))
   end
 
-  @spec get(String.Chars.t()) :: Value | nil
+  @spec get(String.Chars.t()) :: %Value{} | nil
   def get(key) do
     # NOTE: we do the lookup in the Agent itself because it's probably faster than copying all the data and the caller doing the lookup itself.
     case Agent.get(__MODULE__, &Map.get(&1, key)) do
