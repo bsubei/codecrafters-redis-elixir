@@ -15,12 +15,14 @@ defmodule Redis.RESP do
   @crlf_iodata [?\r, ?\n]
 
   @type encoding_t :: :integer | :simple_string | :bulk_string | :simple_error | :array
+  @type resp_value_t :: binary() | list(resp_value_t())
+  @type decoding_result_t(value_t) :: {:ok, value_t, binary()} | :error
 
   @doc ~S"""
     Encodes a list of Elixir terms as an iodata of a Redis (RESP) Array of Bulk Strings.
     Alternatively, if a single element is provided, the output will be encoded as a simple string.
 
-    NOTE: encoding of nested arrays is not supported, although decoding is.
+    NOTE: encoding of nested arrays is supported, but the nested elements can only be encoded as bulk strings or more nested arrays.
 
     ## Examples
 
@@ -50,15 +52,23 @@ defmodule Redis.RESP do
         iex> IO.iodata_to_binary(Redis.RESP.encode("ErRoR: WHAT DID YOU DO?!", :simple_error))
         "-ErRoR: WHAT DID YOU DO?!\r\n"
   """
+  @spec encode([String.Chars.t()] | String.Chars.t()) :: iodata
+  def encode(input) when is_list(input) do
+    encode(input, :array)
+  end
+
+  def encode(input) when is_binary(input) do
+    encode(input, :bulk_string)
+  end
+
   @spec encode([String.Chars.t()] | String.Chars.t(), encoding_t()) :: iodata
   def encode(input, encoding_type)
 
-  def encode(input, :integer) when is_binary(input),
-    do: [?:, Integer.to_string(String.to_integer(input)), @crlf_iodata]
+  def encode(input, :integer), do: [?:, Integer.to_string(String.to_integer(input)), @crlf_iodata]
 
-  def encode(input, :simple_string) when is_binary(input), do: [?+, input, @crlf_iodata]
+  def encode(input, :simple_string), do: [?+, input, @crlf_iodata]
 
-  def encode(input, :simple_error) when is_binary(input), do: [?-, input, @crlf_iodata]
+  def encode(input, :simple_error), do: [?-, input, @crlf_iodata]
 
   def encode("", :bulk_string), do: [?$, "-1", @crlf_iodata]
 
@@ -69,7 +79,7 @@ defmodule Redis.RESP do
   def encode(elems, :array) when is_list(elems), do: encode(elems, [], 0)
   # General case for recursion.
   defp encode([first | rest], accumulator, count_so_far) do
-    new_accumulator = [accumulator, encode(first, :bulk_string)]
+    new_accumulator = [accumulator, encode(first)]
     encode(rest, new_accumulator, count_so_far + 1)
   end
 
@@ -84,9 +94,6 @@ defmodule Redis.RESP do
   def make_bulk_string(input), do: IO.iodata_to_binary(encode(input, :bulk_string))
   @spec make_array([String.Chars.t()]) :: String.Chars.t()
   def make_array(input), do: IO.iodata_to_binary(encode(input, :array))
-
-  @type resp_value_t :: binary() | list(resp_value_t())
-  @type decoding_result_t(value_t) :: {:ok, value_t, binary()} | :error
 
   @doc ~S"""
   Decodes a RESP-encoded value from the given `data`.
