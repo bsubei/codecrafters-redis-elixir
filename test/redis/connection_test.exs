@@ -37,6 +37,17 @@ defmodule Redis.ConnectionTest do
       check_request_response(connection, ping, pong)
     end
 
+    test "The PING command is not case sensitive", %{
+      connection: connection
+    } do
+      ping = IO.iodata_to_binary(RESP.encode(["pING"], :array))
+      pong = RESP.encode("PONG", :simple_string)
+      check_request_response(connection, ping, pong)
+
+      ping = IO.iodata_to_binary(RESP.encode(["ping"], :array))
+      check_request_response(connection, ping, pong)
+    end
+
     test "receiving a GET request on a non-existing key should return the null bulk string", %{
       connection: connection
     } do

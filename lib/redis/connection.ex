@@ -129,7 +129,13 @@ defmodule Redis.Connection do
         case RESP.decode(state.buffer) do
           # If we can decode this request, then handle it, then recurse in case the buffer has more data to process.
           {:ok, decoded, rest} ->
-            # TODO handle case insensitivity
+            decoded =
+              case decoded do
+                # Make the first element (the command) uppercased so we're not case sensitive.
+                [first | _rest] -> [String.upcase(first)] ++ Enum.drop(decoded, 1)
+                _ -> String.upcase(decoded)
+              end
+
             new_state = handle_request(state, decoded)
             {new_state, rest}
 
@@ -489,7 +495,6 @@ defmodule Redis.Connection do
     state
   end
 
-  # TODO implement this
   # TODO support optional arguments eventually
   # Append a new entry to a stream when given an explicit stream key.
   defp handle_request(state, ["XADD", stream_key, entry_id | rest]) do
