@@ -13,6 +13,8 @@ defmodule Redis.Stream do
   @type t :: %__MODULE__{entries: list(%Redis.Stream.Entry{})}
   defstruct entries: []
 
+  @type error_reason :: :empty_entries
+
   @spec get_entry(%__MODULE__{}, binary()) :: %Redis.Stream.Entry{} | nil
   def get_entry(state, entry_id) do
     state.entries
@@ -64,7 +66,7 @@ defmodule Redis.Stream do
     end
   end
 
-  @spec resolve_entry_id(%__MODULE__{}, binary()) :: binary()
+  @spec resolve_entry_id(%__MODULE__{}, binary()) :: {:ok, binary()} | {:error | error_reason()}
   def resolve_entry_id(state, "*") do
     time_now_ms = System.os_time(:millisecond)
     resolve_entry_id(state, "#{time_now_ms}-*")
@@ -81,7 +83,7 @@ defmodule Redis.Stream do
         number -> number
       end
 
-    "#{timestamp_ms}-#{sequence_number}"
+    {:ok, "#{timestamp_ms}-#{sequence_number}"}
   end
 
   @spec next_sequence_number(%__MODULE__{}, integer) :: binary()
