@@ -72,7 +72,23 @@ defmodule Redis.Stream do
     resolve_entry_id(state, "#{time_now_ms}-*")
   end
 
-  # This handles the cases when entry_id is : "<timestamp>" or "<timestamp>-*" or "<timestamp>-<sequence_number>"
+  def resolve_entry_id(state, "-") do
+    # The entries are stored in reverse order (earliest last).
+    case List.last(state.entries) do
+      nil -> {:error, :empty_entries}
+      entry -> {:ok, entry.id}
+    end
+  end
+
+  def resolve_entry_id(state, "+") do
+    # The entries are stored in reverse order (latest first).
+    case List.first(state.entries) do
+      nil -> {:error, :empty_entries}
+      entry -> {:ok, entry.id}
+    end
+  end
+
+  # This handles the cases when entry_id is: "<timestamp>" or "<timestamp>-*" or "<timestamp>-<sequence_number>"
   def resolve_entry_id(state, entry_id) do
     timestamp_ms = timestamp_ms_from_entry_id(entry_id)
 
