@@ -21,8 +21,16 @@ defmodule Redis.Stream do
     |> Enum.find(fn entry -> entry_id == entry.id end)
   end
 
-  @spec get_entry_with_timestamp_ms(%__MODULE__{}, integer()) :: %Redis.Stream.Entry{} | nil
-  def get_entry_with_timestamp_ms(state, timestamp_ms) do
+  @spec get_next_entry(%__MODULE__{}, binary()) :: %Redis.Stream.Entry{} | nil
+  def get_next_entry(state, entry_id) do
+    # Grab the entry immediately after the specified entry id (the list is stored in reverse chronological order).
+    state.entries
+    |> Enum.take_while(fn entry -> entry_id != entry.id end)
+    |> List.last()
+  end
+
+  @spec get_first_entry_with_timestamp_ms(%__MODULE__{}, integer()) :: %Redis.Stream.Entry{} | nil
+  def get_first_entry_with_timestamp_ms(state, timestamp_ms) do
     state.entries
     |> Enum.find(fn entry -> timestamp_ms == timestamp_ms_from_entry_id(entry.id) end)
   end
@@ -106,7 +114,7 @@ defmodule Redis.Stream do
   defp next_sequence_number(state, timestamp_ms) do
     # Iterate over the entries from latest to oldest and find the first entry with this timestamp. Add one and that's the next sequence number.
     # Otherwise, use a default of 0 (unless the timestamp is 0, in which case use 1).
-    case get_entry_with_timestamp_ms(state, timestamp_ms) do
+    case get_first_entry_with_timestamp_ms(state, timestamp_ms) do
       nil -> if timestamp_ms == 0, do: "1", else: "0"
       latest_entry -> sequence_number_from_entry_id(latest_entry.id) + 1
     end

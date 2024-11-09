@@ -533,6 +533,34 @@ defmodule Redis.Connection do
     end
   end
 
+  # XREAD is like an XRANGE where it only takes a start entry id (which is exclusive) and implicitly uses "-" for the end entry id.
+  # TODO "streams" is case sensitive but it shouldn't be
+  defp handle_request(state, ["XREAD", "streams", stream_key, exclusive_start_entry_id]) do
+    stream =
+      case KeyValueStore.get(stream_key, :no_expiry) do
+        nil -> %Redis.Stream{}
+        value -> value.data
+      end
+
+    # We "resolve" the start entry id by finding the next entry id since it's exclusive.
+    case Redis.Stream.get_next_entry(stream, exclusive_start_entry_id) do
+      nil ->
+        :error
+
+      start_entry ->
+        # We resolve the end entry id and treat it as if it were a "+".
+        {:ok, resolved_end_id} = Redis.Stream.resolve_entry_id(stream, "+")
+
+        handle_request_xread(state, [
+          "XREAD",
+          "streams",
+          stream_key,
+          start_entry.id,
+          resolved_end_id
+        ])
+    end
+  end
+
   defp handle_request_xadd(state, ["XADD", stream_key, entry_id | rest] = request) do
     # Validate and parse the key-value arguments, which must come in pairs.
     stream_data = map_from_key_value_pairs(rest)
@@ -596,12 +624,64 @@ defmodule Redis.Connection do
     {:ok, state}
   end
 
+  defp handle_request_xread(
+         state,
+         ["XREAD", "streams", stream_key, start_entry_id, end_entry_id]
+       ) do
+    # Just like handle_request_xrange but returns data for multiple streams.
+    reply_message =
+      [stream_key]
+      # Get a map of %{stream_key => stream_entries}
+      |> Enum.map(fn stream_key ->
+        stream_entries =
+          case KeyValueStore.get(stream_key, :no_expiry) do
+            nil ->
+              []
+
+            %Redis.Value{type: :stream, data: stream} ->
+              Redis.Stream.get_entries_range(stream, start_entry_id, end_entry_id)
+              |> IO.inspect(label: "get_entries_range")
+
+            # TODO correctly raise errors
+            _ ->
+              :error
+          end
+
+        {stream_key, stream_entries}
+      end)
+      |> Map.new()
+      |> IO.inspect(label: "map")
+      |> multiple_stream_entries_to_resp()
+
+    :ok = send_message(state, reply_message)
+
+    {:ok, state}
+  end
+
   @spec stream_entries_to_resp(list(%Redis.Stream.Entry{})) :: iodata()
   defp stream_entries_to_resp(entries) do
+    # Given the entries for one stream, return them in the RESP format (this is used for the XRANGE command).
     entries
     |> Enum.map(fn entry ->
       entry_values = for {k, v} <- entry.data, do: [k, v]
       [entry.id, List.flatten(entry_values)]
+    end)
+    |> array_request()
+  end
+
+  @spec multiple_stream_entries_to_resp(%{binary() => list(%Redis.Stream.Entry{})}) :: iodata()
+  defp multiple_stream_entries_to_resp(stream_key_to_entries) do
+    # Given multiple stream keys and their entries, return them in the RESP format (this is used for the XADD command).
+    stream_key_to_entries
+    |> Enum.map(fn {key, entries} ->
+      formatted_entries =
+        entries
+        |> Enum.map(fn entry ->
+          entry_values = for {k, v} <- entry.data, do: [k, v]
+          [entry.id, List.flatten(entry_values)]
+        end)
+
+      [key, formatted_entries]
     end)
     |> array_request()
   end
