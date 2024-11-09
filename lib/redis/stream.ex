@@ -1,6 +1,6 @@
 defmodule Redis.Stream.Entry do
   @enforce_keys [:id]
-  @type t :: %__MODULE__{id: binary(), data: %{}}
+  @type t :: %__MODULE__{id: binary(), data: %{binary() => binary()}}
   defstruct [:id, data: %{}]
 end
 
