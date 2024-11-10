@@ -165,6 +165,9 @@ defmodule Redis.ConnectionTest do
 
       assert %Redis.Stream.Entry{id: "1235-0", data: %{"foo" => "42"}} =
                Redis.Stream.get_entry(stream, "1235-0")
+
+      assert %Redis.Stream.Entry{id: "1234-0", data: %{"foo" => "bar", "baz" => "quirk"}} =
+               Redis.Stream.get_entry(stream, "1234-0")
     end
 
     test "sending XADD with 0-* and 42-* entry ids will resolve the sequence number correctly",

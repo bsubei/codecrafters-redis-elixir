@@ -1,6 +1,8 @@
 defmodule Redis.Stream.Entry do
   @enforce_keys [:id]
   @type t :: %__MODULE__{id: binary(), data: %{binary() => binary()}}
+  # TODO the entry data ordering should be preserved. From the docs:
+  # The field-value pairs are stored in the same order they are given by the user
   defstruct [:id, data: %{}]
 end
 
@@ -101,10 +103,11 @@ defmodule Redis.Stream do
     timestamp_ms = timestamp_ms_from_entry_id(entry_id)
 
     sequence_number =
-      case String.split(entry_id, "-") |> List.last() do
-        nil -> next_sequence_number(state, timestamp_ms)
+      case String.split(entry_id, "-") |> Enum.at(1) do
+        # Having no sequence number implies a 0.
+        nil -> 0
         "*" -> next_sequence_number(state, timestamp_ms)
-        number -> number
+        number -> String.to_integer(number)
       end
 
     {:ok, "#{timestamp_ms}-#{sequence_number}"}
