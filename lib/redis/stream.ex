@@ -1,29 +1,31 @@
 defmodule Redis.Stream.Entry do
   @enforce_keys [:id]
-  @type t :: %__MODULE__{id: binary(), data: %{binary() => binary()}}
-  # TODO the entry data ordering should be preserved. From the docs:
+  @type t :: %__MODULE__{id: binary(), data: list({binary(), binary()})}
+  # NOTE: the entry data ordering should be preserved. From the docs:
   # The field-value pairs are stored in the same order they are given by the user
-  defstruct [:id, data: %{}]
+  defstruct [:id, data: []]
 end
 
 defmodule Redis.Stream do
   @moduledoc """
   This module defines a "stream" that is stored in a KeyValueStore. A stream contains multiple entries, each entry has an id and any number of key-value fields.
   """
+  alias Redis.Stream.Entry
+  alias Redis.RESP
 
   # TODO for now just use a list in reversed order (because prepending is O(1) in Elixir), but eventually use a data structure that is more optimized for O(1) random-access lookup AND O(1)-ish range lookups
-  @type t :: %__MODULE__{entries: list(%Redis.Stream.Entry{})}
+  @type t :: %__MODULE__{entries: list(%Entry{})}
   defstruct entries: []
 
   @type error_reason :: :empty_entries
 
-  @spec get_entry(%__MODULE__{}, binary()) :: %Redis.Stream.Entry{} | nil
+  @spec get_entry(%__MODULE__{}, binary()) :: %Entry{} | nil
   def get_entry(state, entry_id) do
     state.entries
     |> Enum.find(fn entry -> entry_id == entry.id end)
   end
 
-  @spec get_next_entry(%__MODULE__{}, binary()) :: %Redis.Stream.Entry{} | nil
+  @spec get_next_entry(%__MODULE__{}, binary()) :: %Entry{} | nil
   def get_next_entry(state, entry_id) do
     # Grab the entry immediately after the specified entry id (the list is stored in reverse chronological order).
     state.entries
@@ -31,13 +33,13 @@ defmodule Redis.Stream do
     |> List.last()
   end
 
-  @spec get_first_entry_with_timestamp_ms(%__MODULE__{}, integer()) :: %Redis.Stream.Entry{} | nil
+  @spec get_first_entry_with_timestamp_ms(%__MODULE__{}, integer()) :: %Entry{} | nil
   def get_first_entry_with_timestamp_ms(state, timestamp_ms) do
     state.entries
     |> Enum.find(fn entry -> timestamp_ms == timestamp_ms_from_entry_id(entry.id) end)
   end
 
-  @spec get_entries_range(%__MODULE__{}, binary(), binary()) :: list(%Redis.Stream.Entry{})
+  @spec get_entries_range(%__MODULE__{}, binary(), binary()) :: list(%Entry{})
   def get_entries_range(state, start_entry_id, end_entry_id) do
     # NOTE: the start and end range here is inclusive on both ends.
     # NOTE: we store the list of entries in reverse order (i.e. the first entry in the list is the most-recent one), which is why we go from end to start.
@@ -63,7 +65,7 @@ defmodule Redis.Stream do
     end
   end
 
-  @spec add(%__MODULE__{}, %Redis.Stream.Entry{}) ::
+  @spec add(%__MODULE__{}, %Entry{}) ::
           %__MODULE__{} | :error_not_latest | :error_zero
   def add(state, new_entry) do
     case validate_entry_to_add(state, new_entry) do
@@ -156,7 +158,7 @@ defmodule Redis.Stream do
       (left_timestamp == right_timestamp and left_sequence_number > right_sequence_number)
   end
 
-  @spec validate_entry_to_add(%__MODULE__{}, %Redis.Stream.Entry{}) ::
+  @spec validate_entry_to_add(%__MODULE__{}, %Entry{}) ::
           :ok | :error_zero | :error_not_latest
   defp validate_entry_to_add(state, new_entry) do
     # Validate the entry ID (must be unique and monotonically increasing).
@@ -178,5 +180,35 @@ defmodule Redis.Stream do
       true ->
         :error_not_latest
     end
+  end
+
+  ## Helpers and utility functions.
+
+  @spec stream_entries_to_resp(list(%Entry{})) :: iodata()
+  def stream_entries_to_resp(entries) do
+    # Given the entries for one stream, return them in the RESP format (this is used for the XRANGE command).
+    entries
+    |> Enum.map(fn entry ->
+      entry_values = for {k, v} <- entry.data, do: [k, v]
+      [entry.id, List.flatten(entry_values)]
+    end)
+    |> RESP.encode(:array)
+  end
+
+  @spec multiple_stream_entries_to_resp(list({binary(), list(%Entry{})})) :: iodata()
+  def multiple_stream_entries_to_resp(stream_key_entries_pairs) do
+    # Given multiple stream keys and their entries, return them in the RESP format (this is used for the XREAD command).
+    stream_key_entries_pairs
+    |> Enum.map(fn {key, entries} ->
+      formatted_entries =
+        entries
+        |> Enum.map(fn entry ->
+          entry_values = for {k, v} <- entry.data, do: [k, v]
+          [entry.id, List.flatten(entry_values)]
+        end)
+
+      [key, formatted_entries]
+    end)
+    |> RESP.encode(:array)
   end
 end

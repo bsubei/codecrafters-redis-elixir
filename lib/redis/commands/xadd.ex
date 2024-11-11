@@ -47,7 +47,7 @@ defmodule Redis.Commands.XAdd do
   defp xadd_impl(request) do
     entry = %Redis.Stream.Entry{
       id: request.entry_id,
-      data: Map.new(request.field_value_pairs)
+      data: request.field_value_pairs
     }
 
     # Add this entry to the stream (creating a new stream if needed).

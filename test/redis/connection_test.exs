@@ -143,7 +143,7 @@ defmodule Redis.ConnectionTest do
 
       assert length(stream.entries) == 1
 
-      assert %Redis.Stream.Entry{id: "1234-0", data: %{"foo" => "bar", "baz" => "quirk"}} =
+      assert %Redis.Stream.Entry{id: "1234-0", data: [{"foo", "bar"}, {"baz", "quirk"}]} =
                Redis.Stream.get_entry(stream, "1234-0")
 
       # Let's send another entry to the same stream!
@@ -163,10 +163,10 @@ defmodule Redis.ConnectionTest do
 
       assert length(stream.entries) == 2
 
-      assert %Redis.Stream.Entry{id: "1235-0", data: %{"foo" => "42"}} =
+      assert %Redis.Stream.Entry{id: "1235-0", data: [{"foo", "42"}]} =
                Redis.Stream.get_entry(stream, "1235-0")
 
-      assert %Redis.Stream.Entry{id: "1234-0", data: %{"foo" => "bar", "baz" => "quirk"}} =
+      assert %Redis.Stream.Entry{id: "1234-0", data: [{"foo", "bar"}, {"baz", "quirk"}]} =
                Redis.Stream.get_entry(stream, "1234-0")
     end
 
@@ -175,7 +175,7 @@ defmodule Redis.ConnectionTest do
            connection: connection
          } do
       foo_bar_list = ["foo", "bar", "baz", "quirk"]
-      foo_bar_map = %{"foo" => "bar", "baz" => "quirk"}
+      foo_bar_pairs = [{"foo", "bar"}, {"baz", "quirk"}]
 
       xadd_request =
         IO.iodata_to_binary(
@@ -194,7 +194,7 @@ defmodule Redis.ConnectionTest do
 
       assert length(stream.entries) == 1
 
-      assert %Redis.Stream.Entry{id: "0-1", data: ^foo_bar_map} =
+      assert %Redis.Stream.Entry{id: "0-1", data: ^foo_bar_pairs} =
                Redis.Stream.get_entry(stream, "0-1")
 
       # Now let's try the same entry id "0-*", it should reply with the entry id "0-2".
@@ -206,7 +206,7 @@ defmodule Redis.ConnectionTest do
 
       assert length(stream.entries) == 2
 
-      assert %Redis.Stream.Entry{id: "0-2", data: ^foo_bar_map} =
+      assert %Redis.Stream.Entry{id: "0-2", data: ^foo_bar_pairs} =
                Redis.Stream.get_entry(stream, "0-2")
 
       # Finally, if we XADD 42-*, it will resolve to the entry id 42-0.
@@ -226,7 +226,7 @@ defmodule Redis.ConnectionTest do
 
       assert length(stream.entries) == 3
 
-      assert %Redis.Stream.Entry{id: "42-0", data: ^foo_bar_map} =
+      assert %Redis.Stream.Entry{id: "42-0", data: ^foo_bar_pairs} =
                Redis.Stream.get_entry(stream, "42-0")
     end
   end

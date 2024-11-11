@@ -500,44 +500,10 @@ defmodule Redis.Connection do
     Redis.Commands.XAdd.handle(state, request)
   end
 
-  # defp handle_request(state, ["XRANGE", stream_key, start_entry_id, end_entry_id]) do
-  #   # Resolve the entry ids, but don't allow "*".
-  #   case [start_entry_id, end_entry_id] do
-  #     ["*", _] ->
-  #       :error
-
-  #     [_, "*"] ->
-  #       :error
-
-  #     _ ->
-  #       stream =
-  #         case KeyValueStore.get(stream_key, :no_expiry) do
-  #           nil -> %Redis.Stream{}
-  #           value -> value.data
-  #         end
-
-  #       {:ok, resolved_start_id} = Redis.Stream.resolve_entry_id(stream, start_entry_id)
-  #       {:ok, resolved_end_id} = Redis.Stream.resolve_entry_id(stream, end_entry_id)
-
-  #       reply_message =
-  #         case KeyValueStore.get(stream_key, :no_expiry) do
-  #           nil ->
-  #             bulk_string_request("")
-
-  #           %Redis.Value{type: :stream, data: stream} ->
-  #             Redis.Stream.get_entries_range(stream, resolved_start_id, resolved_end_id)
-  #             |> stream_entries_to_resp()
-
-  #           # TODO correctly raise errors
-  #           _ ->
-  #             :error
-  #         end
-
-  #       :ok = send_message(state, reply_message)
-
-  #       {:ok, state}
-  #   end
-  # end
+  # Get the entries in a stream from the specified start and end entry ids (both ends inclusive).
+  defp handle_request(state, ["XRANGE", _stream_key, _start_entry_id, _end_entry_id] = request) do
+    Redis.Commands.XRange.handle(state, request)
+  end
 
   # defp handle_xread_nonblocking(state, list_of_args) do
   #   reply_message =

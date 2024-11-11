@@ -1,7 +1,7 @@
 defmodule Redis.CommandsTest do
   use ExUnit.Case, async: true
   # alias Redis.Commands.{XRead, XAdd, XRange}
-  alias Redis.Commands.XAdd
+  alias Redis.Commands.{XAdd, XRange}
   alias Redis.{Connection, KeyValueStore, RESP}
 
   # These test helpers are copied from connection_test, find a way to reuse.
@@ -48,7 +48,7 @@ defmodule Redis.CommandsTest do
       {:ok, connection} = XAdd.handle(connection, ["XADD", stream_key, entry_id, key, value])
 
       expected_stream = %Redis.Stream{
-        entries: [%Redis.Stream.Entry{id: entry_id, data: %{key => value}}]
+        entries: [%Redis.Stream.Entry{id: entry_id, data: [{key, value}]}]
       }
 
       check_stream(stream_key, expected_stream)
@@ -126,7 +126,7 @@ defmodule Redis.CommandsTest do
       {:ok, connection} = XAdd.handle(connection, ["XADD", stream_key, entry_id, "key1", "val1"])
 
       expected_stream = %Redis.Stream{
-        entries: [%Redis.Stream.Entry{id: entry_id, data: %{"key1" => "val1"}}]
+        entries: [%Redis.Stream.Entry{id: entry_id, data: [{"key1", "val1"}]}]
       }
 
       check_response(connection, RESP.encode(entry_id, :bulk_string))
@@ -154,8 +154,8 @@ defmodule Redis.CommandsTest do
 
       expected_stream = %Redis.Stream{
         entries: [
-          %Redis.Stream.Entry{id: new_entry_id, data: %{"key2" => "val2"}},
-          %Redis.Stream.Entry{id: entry_id, data: %{"key1" => "val1"}}
+          %Redis.Stream.Entry{id: new_entry_id, data: [{"key2", "val2"}]},
+          %Redis.Stream.Entry{id: entry_id, data: [{"key1", "val1"}]}
         ]
       }
 
@@ -164,5 +164,88 @@ defmodule Redis.CommandsTest do
     end
   end
 
-  # TODO add basic tests for xrange and xread
+  describe "running XRANGE" do
+    setup do
+      # NOTE: because there is only one KeyValueStore in our application, we should reset it to the initial state after every test clause.
+      on_exit(fn -> KeyValueStore.clear() end)
+
+      {:ok, connection: create_test_connection()}
+    end
+
+    test "with missing arguments errors out", %{
+      connection: connection
+    } do
+      assert_raise FunctionClauseError, fn ->
+        XRange.handle(connection, ["XRANGE"])
+      end
+
+      assert_raise FunctionClauseError, fn ->
+        XRange.handle(connection, ["XRANGE", "stream1"])
+      end
+
+      assert_raise FunctionClauseError, fn ->
+        XRange.handle(connection, ["XRANGE", "stream1", "start_id1"])
+      end
+
+      assert_raise FunctionClauseError, fn ->
+        XRange.handle(connection, ["XRANGE", "stream1", "start_id1", "end1", "unaccounted_for"])
+      end
+    end
+
+    test "on an empty stream returns a nil response", %{connection: connection} do
+      stream_key = "nonexistent_stream"
+      {:ok, connection} = XRange.handle(connection, ["XRANGE", stream_key, "0-1", "1-0"])
+
+      # We should get a nil response and the stream shouldn't exist in the key value store.
+      assert KeyValueStore.get(stream_key, :no_expiry) == nil
+      check_response(connection, RESP.encode("", :bulk_string))
+    end
+
+    test "on non-empty stream returns data for the requested range in the same order they were originally stored",
+         %{connection: connection} do
+      stream_key = "stream1"
+      # Make sure the stream is populated with data from 0-1 to 1-1. Let's say we have 5 entries.
+      {:ok, connection} = XAdd.handle(connection, ["XADD", stream_key, "0-1", "key1", "val1"])
+      check_response(connection, RESP.encode("0-1", :bulk_string))
+
+      {:ok, connection} =
+        XAdd.handle(connection, [
+          "XADD",
+          stream_key,
+          "0-2",
+          "key2",
+          "val2",
+          "anotherkey2",
+          "anotherval2"
+        ])
+
+      check_response(connection, RESP.encode("0-2", :bulk_string))
+      {:ok, connection} = XAdd.handle(connection, ["XADD", stream_key, "1-0", "key3", "val3"])
+      check_response(connection, RESP.encode("1-0", :bulk_string))
+      {:ok, connection} = XAdd.handle(connection, ["XADD", stream_key, "1-1", "key4", "val4"])
+      check_response(connection, RESP.encode("1-1", :bulk_string))
+      {:ok, connection} = XAdd.handle(connection, ["XADD", stream_key, "1-2", "key5", "val5"])
+      check_response(connection, RESP.encode("1-2", :bulk_string))
+
+      # If we request from 0-2 to 1-1, we should get the middle 3 entries only.
+      {:ok, connection} = XRange.handle(connection, ["XRANGE", stream_key, "0-2", "1-1"])
+
+      expected_response =
+        RESP.encode(
+          [
+            # The response contains 3 entries.
+            # Each entry contains a pair: the entry id (a string) and its contents (a list).
+            # NOTE: the order of the contents is the same as they were added using XADD.
+            ["0-2", ["key2", "val2", "anotherkey2", "anotherval2"]],
+            ["1-0", ["key3", "val3"]],
+            ["1-1", ["key4", "val4"]]
+          ],
+          :array
+        )
+
+      check_response(connection, expected_response)
+    end
+  end
+
+  # TODO add basic tests for xread
 end
