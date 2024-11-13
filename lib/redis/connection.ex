@@ -501,72 +501,16 @@ defmodule Redis.Connection do
   end
 
   # Get the entries in a stream from the specified start and end entry ids (both ends inclusive).
-  defp handle_request(state, ["XRANGE", _stream_key, _start_entry_id, _end_entry_id] = request) do
+  defp handle_request(state, ["XRANGE" | _rest] = request) do
     Redis.Commands.XRange.handle(state, request)
   end
 
-  # defp handle_xread_nonblocking(state, list_of_args) do
-  #   reply_message =
-  #     key_to_start_and_end_pairs
-  #     # Get a list of pairs: {stream_key, stream_entries}, one for each stream key.
-  #     |> Enum.map(fn {stream_key, {start_entry_id, end_entry_id}} ->
-  #       stream_entries =
-  #         case KeyValueStore.get(stream_key, :no_expiry) do
-  #           nil ->
-  #             []
-
-  #           %Redis.Value{type: :stream, data: stream} ->
-  #             Redis.Stream.get_entries_range(stream, start_entry_id, end_entry_id)
-
-  #           # TODO correctly raise errors
-  #           _ ->
-  #             :error
-  #         end
-
-  #       {stream_key, stream_entries}
-  #     end)
-  #     |> multiple_stream_entries_to_resp()
-
-  #   :ok = send_message(state, reply_message)
-
-  #   {:ok, state}
-  # end
-
   # XREAD is like an XRANGE where it only takes a start entry id (which is exclusive) and implicitly uses "-" for the end entry id.
-  # TODO "streams" is case sensitive but it shouldn't be
-  defp handle_request(_state, ["XREAD", "streams" | _list_of_args] = _request) do
-    # Redis.Commands.XRead.handle_xread(state, request)
+  defp handle_request(state, ["XREAD" | _rest] = request) do
+    Redis.Commands.XRead.handle_xread(state, request)
   end
 
   ## Helpers and utility functions.
-
-  # @spec stream_entries_to_resp(list(%Redis.Stream.Entry{})) :: iodata()
-  # defp stream_entries_to_resp(entries) do
-  #   # Given the entries for one stream, return them in the RESP format (this is used for the XRANGE command).
-  #   entries
-  #   |> Enum.map(fn entry ->
-  #     entry_values = for {k, v} <- entry.data, do: [k, v]
-  #     [entry.id, List.flatten(entry_values)]
-  #   end)
-  #   |> array_request()
-  # end
-
-  # @spec multiple_stream_entries_to_resp(list({binary(), list(%Redis.Stream.Entry{})})) :: iodata()
-  # defp multiple_stream_entries_to_resp(stream_key_entries_pairs) do
-  #   # Given multiple stream keys and their entries, return them in the RESP format (this is used for the XREAD command).
-  #   stream_key_entries_pairs
-  #   |> Enum.map(fn {key, entries} ->
-  #     formatted_entries =
-  #       entries
-  #       |> Enum.map(fn entry ->
-  #         entry_values = for {k, v} <- entry.data, do: [k, v]
-  #         [entry.id, List.flatten(entry_values)]
-  #       end)
-
-  #     [key, formatted_entries]
-  #   end)
-  #   |> array_request()
-  # end
 
   @spec wait_for_num_replicas_to_reach_offset(
           list(pid()),
@@ -656,15 +600,4 @@ defmodule Redis.Connection do
         # TODO support other kinds of requests later. Right now I don't expect there to be other types used.
     end
   end
-
-  # @spec make_pairs_from_separated_elements(list(binary())) :: list({binary(), binary()})
-  # defp make_pairs_from_separated_elements(input) do
-  #   # Input: [key1, key2, val1, val2]
-  #   # Output: [{key1, val1}, {key2, val2}]
-  #   {keys, values} =
-  #     input
-  #     |> Enum.split(div(length(input), 2))
-
-  #   Enum.zip(keys, values)
-  # end
 end
