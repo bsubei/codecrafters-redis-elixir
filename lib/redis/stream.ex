@@ -136,7 +136,7 @@ defmodule Redis.Stream do
   end
 
   @spec entry_ids_equal?(binary(), binary()) :: boolean()
-  defp entry_ids_equal?(left_entry_id, right_entry_id) do
+  def entry_ids_equal?(left_entry_id, right_entry_id) do
     {left_timestamp, left_sequence_number} =
       {timestamp_ms_from_entry_id(left_entry_id), sequence_number_from_entry_id(left_entry_id)}
 
@@ -147,7 +147,7 @@ defmodule Redis.Stream do
   end
 
   @spec entry_id_greater_than?(binary(), binary()) :: boolean()
-  defp entry_id_greater_than?(left_entry_id, right_entry_id) do
+  def entry_id_greater_than?(left_entry_id, right_entry_id) do
     {left_timestamp, left_sequence_number} =
       {timestamp_ms_from_entry_id(left_entry_id), sequence_number_from_entry_id(left_entry_id)}
 
@@ -210,5 +210,11 @@ defmodule Redis.Stream do
       [key, formatted_entries]
     end)
     |> RESP.encode(:array)
+  end
+
+  @spec increment_entry_id(binary()) :: binary()
+  def increment_entry_id(entry_id) do
+    # Without checking what entries actually exist, return the would-be next entry id given the current id.
+    "#{timestamp_ms_from_entry_id(entry_id)}-#{sequence_number_from_entry_id(entry_id) + 1}"
   end
 end
