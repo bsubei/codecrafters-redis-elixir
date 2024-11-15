@@ -26,11 +26,7 @@ defmodule Redis.Commands.XAdd do
   @spec handle(%Connection{}, list(binary())) :: {:ok, %Connection{}}
   def handle(connection, ["XADD", stream_key, entry_id | rest]) do
     # First resolve this entry id (i.e. handle any "*").
-    stream =
-      case KeyValueStore.get(stream_key, :no_expiry) do
-        nil -> %Redis.Stream{}
-        value -> value.data
-      end
+    stream = KeyValueStore.get_stream(stream_key)
 
     {:ok, resolved_entry_id} = Redis.Stream.resolve_entry_id(stream, entry_id)
 

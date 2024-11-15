@@ -5,7 +5,7 @@ defmodule Redis.KeyValueStore do
 
   # We use an Agent because GenServer is overkill.
   use Agent
-  alias Redis.Value
+  alias Redis.{Stream, Value}
 
   @spec start_link(%{binary() => %Value{}}) :: Agent.on_start()
   def start_link(init_data), do: Agent.start_link(fn -> init_data end, name: __MODULE__)
@@ -35,4 +35,12 @@ defmodule Redis.KeyValueStore do
   end
 
   def clear(), do: Agent.update(__MODULE__, fn _ -> %{} end)
+
+  @spec get_stream(binary()) :: %Stream{}
+  def get_stream(stream_key) do
+    case get(stream_key, :no_expiry) do
+      nil -> %Redis.Stream{}
+      value -> value.data
+    end
+  end
 end

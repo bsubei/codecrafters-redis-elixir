@@ -1,6 +1,5 @@
 defmodule Redis.CommandsTest do
   use ExUnit.Case, async: true
-  # alias Redis.Commands.{XRead, XAdd, XRange}
   alias Redis.Commands.{XAdd, XRange}
   alias Redis.{Connection, KeyValueStore, RESP}
 

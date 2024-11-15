@@ -132,7 +132,8 @@ defmodule Redis.Connection do
             decoded =
               case decoded do
                 # Make the first element (the command) uppercased so we're not case sensitive.
-                [first | _rest] -> [String.upcase(first)] ++ Enum.drop(decoded, 1)
+                [first | rest_decoded] -> [String.upcase(first) | rest_decoded]
+                # This handles the case when decoded is a single string, not a list.
                 _ -> String.upcase(decoded)
               end
 
@@ -174,7 +175,7 @@ defmodule Redis.Connection do
   end
 
   # Return the new state after handling the request (possibly by replying over this Connection or other Connections).
-  @spec handle_request(%__MODULE__{}, list(binary) | binary()) :: {:ok, %__MODULE__{}} | :error
+  @spec handle_request(%__MODULE__{}, [binary(), ...] | binary()) :: {:ok, %__MODULE__{}} | :error
 
   ## Replica-only message handling (for replication updates). NOTE: we update our offset count based on these replication messages we get from master.
   # If we receive replication updates from master, apply them but do not reply.

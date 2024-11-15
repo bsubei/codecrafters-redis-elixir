@@ -1,4 +1,4 @@
 defmodule Redis.ServerInfoTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case
   doctest Redis.ServerInfo
 end

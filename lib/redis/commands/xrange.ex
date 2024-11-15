@@ -20,15 +20,11 @@ defmodule Redis.Commands.XRange do
         :error
 
       _ ->
-        stream =
-          case KeyValueStore.get(stream_key, :no_expiry) do
-            nil -> %Stream{}
-            value -> value.data
-          end
-
+        stream = KeyValueStore.get_stream(stream_key)
         {:ok, resolved_start_id} = Stream.resolve_entry_id(stream, start_entry_id)
         {:ok, resolved_end_id} = Stream.resolve_entry_id(stream, end_entry_id)
 
+        # TODO refactor this so we don't get the stream twice.
         reply_message =
           case KeyValueStore.get(stream_key, :no_expiry) do
             nil ->

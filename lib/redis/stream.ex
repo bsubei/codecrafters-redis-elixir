@@ -217,4 +217,40 @@ defmodule Redis.Stream do
     # Without checking what entries actually exist, return the would-be next entry id given the current id.
     "#{timestamp_ms_from_entry_id(entry_id)}-#{sequence_number_from_entry_id(entry_id) + 1}"
   end
+
+  @doc ~S"""
+    Get the earliest entry that isn't earlier than the given start id.
+
+    ## Examples
+
+        iex> stream = %Redis.Stream{}
+        iex> Redis.Stream.get_first_entry_greater_than_or_equal(stream, "0-1")
+        nil
+        iex> stream = Redis.Stream.add(stream, %Redis.Stream.Entry{id: "0-1", data: [1, 2]})
+        iex> Redis.Stream.get_first_entry_greater_than_or_equal(stream, "0-1")
+        %Redis.Stream.Entry{id: "0-1", data: [1, 2]}
+        iex> stream = Redis.Stream.add(stream, %Redis.Stream.Entry{id: "0-2", data: [3, 4]})
+        iex> Redis.Stream.get_first_entry_greater_than_or_equal(stream, "0-1")
+        %Redis.Stream.Entry{id: "0-1", data: [1, 2]}
+        iex> Redis.Stream.get_first_entry_greater_than_or_equal(stream, "0-2")
+        %Redis.Stream.Entry{id: "0-2", data: [3, 4]}
+        iex> Redis.Stream.get_first_entry_greater_than_or_equal(stream, "0-3")
+        nil
+        iex> stream = Redis.Stream.add(stream, %Redis.Stream.Entry{id: "1-0", data: [5, 6]})
+        iex> Redis.Stream.get_first_entry_greater_than_or_equal(stream, "0-3")
+        %Redis.Stream.Entry{id: "1-0", data: [5, 6]}
+  """
+  @spec get_first_entry_greater_than_or_equal(%__MODULE__{}, binary()) :: %Entry{} | nil
+  def get_first_entry_greater_than_or_equal(state, desired_start_entry_id) do
+    # Because the list of entries is stored in reverse (from latest to earliest), keep all entries that are later or equal to the desired start id.
+    valid_entries =
+      state.entries
+      |> Enum.take_while(fn entry ->
+        entry_id_greater_than?(entry.id, desired_start_entry_id) or
+          entry.id == desired_start_entry_id
+      end)
+
+    # Now, just take the earliest one. This is the earliest entry in our stream starting from the given desired start.
+    List.last(valid_entries)
+  end
 end
