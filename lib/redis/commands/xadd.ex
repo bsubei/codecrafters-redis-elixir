@@ -12,7 +12,7 @@ defmodule Redis.Commands.XAdd do
   In order to guarantee this property, if the current top ID in the stream has a time greater than the current local time of the instance, the top entry time will be used instead, and the sequence part of the ID incremented. This may happen when, for instance, the local clock jumps backward, or if after a failover the new master has a different absolute time.
   """
 
-  alias Redis.{Connection, RESP, KeyValueStore}
+  alias Redis.{Connection, RESP, KeyValueStore, Stream}
 
   @enforce_keys [:stream_key, :entry_id, :connection, :field_value_pairs]
   @type t :: %__MODULE__{
@@ -28,7 +28,7 @@ defmodule Redis.Commands.XAdd do
     # First resolve this entry id (i.e. handle any "*").
     stream = KeyValueStore.get_stream(stream_key)
 
-    {:ok, resolved_entry_id} = Redis.Stream.resolve_entry_id(stream, entry_id)
+    {:ok, resolved_entry_id} = Stream.resolve_entry_id(stream, entry_id)
 
     xadd_impl(%__MODULE__{
       stream_key: stream_key,
@@ -41,7 +41,7 @@ defmodule Redis.Commands.XAdd do
 
   @spec xadd_impl(%__MODULE__{}) :: {:ok, %Connection{}}
   defp xadd_impl(request) do
-    entry = %Redis.Stream.Entry{
+    entry = %Stream.Entry{
       id: request.entry_id,
       data: request.field_value_pairs
     }
@@ -50,10 +50,10 @@ defmodule Redis.Commands.XAdd do
     stream_or_error =
       case KeyValueStore.get(request.stream_key, :no_expiry) do
         nil ->
-          %Redis.Stream{entries: [entry]}
+          %Stream{entries: [entry]}
 
         value ->
-          Redis.Stream.add(value.data, entry)
+          Stream.add(value.data, entry)
       end
 
     case stream_or_error do

@@ -10,12 +10,12 @@ defmodule Redis.KeyValueStore do
   @spec start_link(%{binary() => %Value{}}) :: Agent.on_start()
   def start_link(init_data), do: Agent.start_link(fn -> init_data end, name: __MODULE__)
 
-  @spec get(String.Chars.t(), :no_expiry) :: %Value{} | nil
+  @spec get(binary(), :no_expiry) :: %Value{} | nil
   def get(key, :no_expiry) when is_binary(key) do
     Agent.get(__MODULE__, &Map.get(&1, key))
   end
 
-  @spec get(String.Chars.t()) :: %Value{} | nil
+  @spec get(binary()) :: %Value{} | nil
   def get(key) do
     # NOTE: we do the lookup in the Agent itself because it's probably faster than copying all the data and the caller doing the lookup itself.
     case Agent.get(__MODULE__, &Map.get(&1, key)) do
@@ -29,14 +29,14 @@ defmodule Redis.KeyValueStore do
     end
   end
 
-  @spec set(String.Chars.t(), String.Chars.t(), number() | nil) :: :ok
+  @spec set(binary(), binary() | Stream.t(), number() | nil) :: :ok
   def set(key, data, expiry_timestamp_epoch_ms \\ nil) do
     Agent.update(__MODULE__, &Map.put(&1, key, Value.init(data, expiry_timestamp_epoch_ms)))
   end
 
   def clear(), do: Agent.update(__MODULE__, fn _ -> %{} end)
 
-  @spec get_stream(binary()) :: %Stream{}
+  @spec get_stream(binary()) :: Stream.t()
   def get_stream(stream_key) do
     case get(stream_key, :no_expiry) do
       nil -> %Redis.Stream{}

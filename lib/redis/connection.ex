@@ -508,7 +508,7 @@ defmodule Redis.Connection do
 
   # XREAD is like an XRANGE where it only takes a start entry id (which is exclusive) and implicitly uses "-" for the end entry id.
   defp handle_request(state, ["XREAD" | _rest] = request) do
-    Redis.Commands.XRead.handle_xread(state, request)
+    Redis.Commands.XRead.handle(state, request)
   end
 
   ## Helpers and utility functions.

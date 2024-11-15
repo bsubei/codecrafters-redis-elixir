@@ -1,7 +1,7 @@
 defmodule Redis.CommandsTest do
-  use ExUnit.Case, async: true
-  alias Redis.Commands.{XAdd, XRange}
-  alias Redis.{Connection, KeyValueStore, RESP}
+  use ExUnit.Case
+  alias Redis.Commands.{XAdd, XRange, XRead}
+  alias Redis.{Connection, KeyValueStore, RESP, Stream, Value}
 
   # These test helpers are copied from connection_test, find a way to reuse.
   defp create_test_connection do
@@ -19,7 +19,7 @@ defmodule Redis.CommandsTest do
   end
 
   defp check_stream(stream_key, expected_stream) do
-    %Redis.Value{type: :stream, data: ^expected_stream} =
+    %Value{type: :stream, data: ^expected_stream} =
       KeyValueStore.get(stream_key, :no_expiry)
   end
 
@@ -46,8 +46,8 @@ defmodule Redis.CommandsTest do
       value = "val1"
       {:ok, connection} = XAdd.handle(connection, ["XADD", stream_key, entry_id, key, value])
 
-      expected_stream = %Redis.Stream{
-        entries: [%Redis.Stream.Entry{id: entry_id, data: [{key, value}]}]
+      expected_stream = %Stream{
+        entries: [%Stream.Entry{id: entry_id, data: [{key, value}]}]
       }
 
       check_stream(stream_key, expected_stream)
@@ -124,8 +124,8 @@ defmodule Redis.CommandsTest do
       # Make sure the stream is created already.
       {:ok, connection} = XAdd.handle(connection, ["XADD", stream_key, entry_id, "key1", "val1"])
 
-      expected_stream = %Redis.Stream{
-        entries: [%Redis.Stream.Entry{id: entry_id, data: [{"key1", "val1"}]}]
+      expected_stream = %Stream{
+        entries: [%Stream.Entry{id: entry_id, data: [{"key1", "val1"}]}]
       }
 
       check_response(connection, RESP.encode(entry_id, :bulk_string))
@@ -151,10 +151,10 @@ defmodule Redis.CommandsTest do
       {:ok, connection} =
         XAdd.handle(connection, ["XADD", stream_key, new_entry_id, "key2", "val2"])
 
-      expected_stream = %Redis.Stream{
+      expected_stream = %Stream{
         entries: [
-          %Redis.Stream.Entry{id: new_entry_id, data: [{"key2", "val2"}]},
-          %Redis.Stream.Entry{id: entry_id, data: [{"key1", "val1"}]}
+          %Stream.Entry{id: new_entry_id, data: [{"key2", "val2"}]},
+          %Stream.Entry{id: entry_id, data: [{"key1", "val1"}]}
         ]
       }
 
@@ -246,5 +246,99 @@ defmodule Redis.CommandsTest do
     end
   end
 
-  # TODO add basic tests for xread
+  describe "running XREAD" do
+    setup do
+      # NOTE: because there is only one KeyValueStore in our application, we should reset it to the initial state after every test clause.
+      on_exit(fn -> KeyValueStore.clear() end)
+
+      {:ok, connection: create_test_connection()}
+    end
+
+    test "with missing arguments errors out", %{
+      connection: connection
+    } do
+      assert_raise ArgumentError, fn ->
+        XRead.handle(connection, ["XREAD"])
+      end
+
+      assert_raise MatchError, fn ->
+        XRead.handle(connection, ["XREAD", "streams"])
+      end
+
+      assert_raise MatchError, fn ->
+        XRead.handle(connection, ["XREAD", "streams", "stream1"])
+      end
+    end
+
+    test "in nonblocking mode on an empty stream returns a nil response", %{
+      connection: connection
+    } do
+      stream_key = "nonexistent_stream"
+      {:ok, connection} = XRead.handle(connection, ["XREAD", "streams", stream_key, "0-1"])
+
+      # We should get a nil response and the stream shouldn't exist in the key value store.
+      assert KeyValueStore.get(stream_key, :no_expiry) == nil
+      check_response(connection, RESP.encode("", :bulk_string))
+    end
+
+    test "in nonblocking mode returns the requested range", %{
+      connection: connection
+    } do
+      stream_key = "new_stream"
+
+      stream =
+        KeyValueStore.get_stream(stream_key)
+        |> Stream.add(%Stream.Entry{id: "0-5", data: [{"1", "2"}]})
+        |> Stream.add(%Stream.Entry{id: "0-42", data: [{"3", "4"}]})
+        |> Stream.add(%Stream.Entry{id: "5-0", data: [{"5", "6"}]})
+
+      KeyValueStore.set(stream_key, stream)
+
+      # Nothing after 100-0 exists, so expect a nil response.
+      {:ok, connection} = XRead.handle(connection, ["XREAD", "streams", stream_key, "100-0"])
+      check_response(connection, RESP.encode("", :bulk_string))
+
+      # Only the one 5-0 entry is after 2-900, expect that.
+      {:ok, connection} = XRead.handle(connection, ["XREAD", "streams", stream_key, "2-900"])
+
+      expected_response =
+        RESP.encode(
+          [
+            # The response contains one stream's entries,
+            [
+              stream_key,
+              # And that stream only has one entry.
+              [
+                ["5-0", ["5", "6"]]
+              ]
+            ]
+          ],
+          :array
+        )
+
+      check_response(connection, expected_response)
+
+      # All three entries are after 0-2, so expect them all.
+      {:ok, connection} = XRead.handle(connection, ["XREAD", "streams", stream_key, "0-2"])
+
+      expected_response =
+        RESP.encode(
+          [
+            # The response contains one stream's entries,
+            [
+              stream_key,
+              # And that stream has three entries.
+              [
+                ["0-5", ["1", "2"]],
+                ["0-42", ["3", "4"]],
+                ["5-0", ["5", "6"]]
+              ]
+            ]
+          ],
+          :array
+        )
+
+      check_response(connection, expected_response)
+    end
+  end
 end

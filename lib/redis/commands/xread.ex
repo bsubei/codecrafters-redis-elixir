@@ -24,23 +24,35 @@ defmodule Redis.Commands.XRead do
     block_timeout_epoch_ms: :none
   ]
 
-  @spec handle_xread(Connection.t(), [binary(), ...]) :: {:ok, Connection.t()}
-  def handle_xread(connection, ["XREAD" | list_of_args]) do
+  @spec handle(Connection.t(), [binary(), ...]) :: {:ok, Connection.t()}
+  def handle(connection, ["XREAD" | list_of_args]) do
     handle_xread_request(resolve_xread_args(connection, list_of_args))
   end
 
   # Single xread request, no blocking/waiting. This is also called "asynchronous".
-  @spec handle_xread_request(__MODULE__.t()) :: {:ok, Connection.t()}
+  @spec handle_xread_request(t()) :: {:ok, Connection.t()}
   defp handle_xread_request(%__MODULE__{block_timeout_epoch_ms: :none} = xread_request) do
-    _next_xread_request = xread_impl(xread_request)
+    case xread_impl(xread_request) do
+      # If nothing was sent, we need to send a nil response.
+      {:error, :nothing_to_send} ->
+        :ok = Connection.send_message(xread_request.connection, RESP.encode("", :bulk_string))
+
+      _ ->
+        nil
+    end
 
     {:ok, xread_request.connection}
   end
 
   # Recursively call handle xread in "blocking" mode with an infinite timeout.
   defp handle_xread_request(%__MODULE__{block_timeout_epoch_ms: :infinity} = xread_request) do
-    next_xread_request = xread_impl(xread_request)
-    handle_xread_request(next_xread_request)
+    xread_request_to_use =
+      case xread_impl(xread_request) do
+        {:ok, next_xread_request} -> next_xread_request
+        {:error, :nothing_to_send} -> xread_request
+      end
+
+    handle_xread_request(xread_request_to_use)
   end
 
   # Finitely recurse in blocking mode (checking for timeout every time).
@@ -49,12 +61,17 @@ defmodule Redis.Commands.XRead do
       :ok = Connection.send_message(xread_request.connection, RESP.encode("", :bulk_string))
       {:ok, xread_request.connection}
     else
-      next_xread_request = xread_impl(xread_request)
-      handle_xread_request(next_xread_request)
+      xread_request_to_use =
+        case xread_impl(xread_request) do
+          {:ok, next_xread_request} -> next_xread_request
+          {:error, :nothing_to_send} -> xread_request
+        end
+
+      handle_xread_request(xread_request_to_use)
     end
   end
 
-  @spec xread_impl(__MODULE__.t()) :: __MODULE__.t()
+  @spec xread_impl(t()) :: {:ok, t()} | {:error, :nothing_to_send}
   defp xread_impl(xread_request) do
     # Get the entries for each stream
     {stream_keys, stream_entries_per_key, resolved_end_ids} =
@@ -106,12 +123,13 @@ defmodule Redis.Commands.XRead do
         Stream.multiple_stream_entries_to_resp(stream_key_entries_pairs)
 
       :ok = Connection.send_message(xread_request.connection, reply_message)
+      {:ok, next_xread_request}
+    else
+      {:error, :nothing_to_send}
     end
-
-    next_xread_request
   end
 
-  @spec resolve_xread_args(Connection.t(), [binary(), ...]) :: __MODULE__.t()
+  @spec resolve_xread_args(Connection.t(), [binary(), ...]) :: t()
   defp resolve_xread_args(connection, list_of_args) do
     {block_timeout_epoch_ms, rest} =
       case list_of_args do
@@ -140,7 +158,8 @@ defmodule Redis.Commands.XRead do
       |> Enum.map(fn
         {stream_key, "$"} ->
           first_entry = KeyValueStore.get_stream(stream_key).entries |> List.first()
-          Stream.increment_entry_id(first_entry.id)
+          first_entry_id = if first_entry == nil, do: "0-0", else: first_entry.id
+          Stream.increment_entry_id(first_entry_id)
 
         {_stream_key, start_id} ->
           Stream.increment_entry_id(start_id)
