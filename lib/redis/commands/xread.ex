@@ -134,8 +134,17 @@ defmodule Redis.Commands.XRead do
       list_of_keys_then_entry_ids
       |> Enum.split(div(length(list_of_keys_then_entry_ids), 2))
 
-    # The start ids we get are exclusive, "resolve" them by incrementing them once.
-    resolved_start_ids = start_ids |> Enum.map(&Stream.increment_entry_id(&1))
+    # The start ids we get are exclusive, "resolve" them by incrementing them once. Also, treat "$" as the latest entry id.
+    resolved_start_ids =
+      Enum.zip(stream_keys, start_ids)
+      |> Enum.map(fn
+        {stream_key, "$"} ->
+          first_entry = KeyValueStore.get_stream(stream_key).entries |> List.first()
+          Stream.increment_entry_id(first_entry.id)
+
+        {_stream_key, start_id} ->
+          Stream.increment_entry_id(start_id)
+      end)
 
     %__MODULE__{
       stream_keys: stream_keys,
