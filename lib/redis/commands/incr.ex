@@ -12,7 +12,7 @@ defmodule Redis.Commands.Incr do
     value =
       case KeyValueStore.get(key) do
         # If it doesn't exist, default to 0.
-        nil -> 0
+        nil -> "0"
         %Value{data: value, type: :string} -> value
       end
 
