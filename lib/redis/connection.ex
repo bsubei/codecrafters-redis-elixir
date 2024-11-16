@@ -180,16 +180,11 @@ defmodule Redis.Connection do
   # Return the new state after handling the request (possibly by replying over this Connection or other Connections).
   @spec handle_request(t(), [binary(), ...] | binary()) :: {:ok, t()} | :error
 
-  ## Replica-only message handling (for replication updates). NOTE: we update our offset count based on these replication messages we get from master.
-  # If we receive replication updates from master, apply them but do not reply.
-  defp handle_request(
-         %__MODULE__{handshake_status: :connected_to_master} = state,
-         ["SET", key, value] = request
-       ) do
-    KeyValueStore.set(key, value)
-    ServerState.add_byte_offset_count(get_request_encoded_length(request))
-    {:ok, state}
+  defp handle_request(connection, ["SET" | _rest] = request) do
+    Redis.Commands.Set.handle(connection, request)
   end
+
+  ## Replica-only message handling (for replication updates). NOTE: we update our offset count based on these replication messages we get from master.
 
   # If we're a connected replica, reply to REPLCONF GETACK with the number of offset bytes so far (not including this request).
   defp handle_request(
@@ -434,44 +429,6 @@ defmodule Redis.Connection do
     {:ok, state}
   end
 
-  # Set the key and value in our key-value store and reply with OK.
-  defp handle_request(state, ["SET", key, value] = request) do
-    # TODO handle retries or errors and somehow revert state maybe?
-    KeyValueStore.set(key, value)
-    :ok = send_message(state, simple_string_request("OK"))
-
-    # Relay any updates to all connected replicas except this current Connection, and make sure to add it to our repl offset.
-    send_message_to_connected_replicas(state, request)
-    ServerState.add_byte_offset_count(get_request_encoded_length(request))
-
-    {:ok, state}
-  end
-
-  # Set with expiry specified. Only handling the "px" case for now (relative expiry in milliseconds).
-  defp handle_request(
-         state,
-         [
-           "SET",
-           key,
-           value,
-           "px",
-           relative_timestamp_milliseconds
-         ] = request
-       ) do
-    # Get the epoch timestamp using the relative requested expiry. i.e. The expiry epoch/unix time is = now + provided expiry timestamp.
-    expiry_timestamp_epoch_ms =
-      System.os_time(:millisecond) + String.to_integer(relative_timestamp_milliseconds)
-
-    KeyValueStore.set(key, value, expiry_timestamp_epoch_ms)
-    :ok = send_message(state, simple_string_request("OK"))
-
-    # Relay any updates to all connected replicas except this current Connection. Note that we don't include the expiry terms in here.
-    send_message_to_connected_replicas(state, ["SET", key, value])
-    ServerState.add_byte_offset_count(get_request_encoded_length(request))
-
-    {:ok, state}
-  end
-
   # Reply with the contents of all the ServerInfo sections we have.
   defp handle_request(state, ["INFO"]) do
     server_info_string = Redis.ServerInfo.to_string(ServerState.get_state().server_info)
@@ -575,18 +532,6 @@ defmodule Redis.Connection do
       {:error, :closed} ->
         :ok
     end
-  end
-
-  defp send_message_to_connected_replicas(state, message) do
-    socket = state.socket
-
-    Enum.map(Map.keys(ServerState.get_state().connected_replicas), fn
-      ^socket ->
-        nil
-
-      replica_socket ->
-        send_message_on_socket(replica_socket, state.send_fn, array_request(message))
-    end)
   end
 
   defp simple_string_request(input), do: RESP.encode(input, :simple_string)
