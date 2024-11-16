@@ -80,10 +80,6 @@ defmodule Redis.Commands.XAdd do
           )
 
         # TODO ignore replication for now since I don't have a way to test it.
-        # # TODO this has the resolved entry_id (not the original request, we resolved the "*" bits). Is this what we send to the replicas?
-        # send_message_to_connected_replicas(request.connection, request)
-        # # TODO add offset byte count, check exact request also
-        # ServerState.add_byte_offset_count(get_request_encoded_length(request))
     end
 
     {:ok, request.connection}

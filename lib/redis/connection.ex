@@ -31,12 +31,15 @@ defmodule Redis.Connection do
   # :replconf_two_received => the second replconf has been received and processed by us.
   # :connected_to_replica => the handshake has concluded and this connection is the replication connection with the replica. We will send replication updates to the replica after this point.
 
+  @type send_fn_t :: (:gen_tcp.socket(), iodata() ->
+                        :ok
+                        | {:error,
+                           :closed | {:timeout, binary() | :erlang.iovec()} | :inet.posix()})
+
   @enforce_keys [:socket, :send_fn, :handshake_status, :role]
   @type t :: %__MODULE__{
           socket: :gen_tcp.socket(),
-          send_fn: (:gen_tcp.socket(), iodata() ->
-                      :ok
-                      | {:error, :closed | {:timeout, binary() | :erlang.iovec()} | :inet.posix()}),
+          send_fn: send_fn_t(),
           handshake_status: atom(),
           # TODO the role of the server could change (replica becomes master), so we have to treat this "role" here as a cached value that might need to be updated.
           role: atom(),
@@ -105,7 +108,7 @@ defmodule Redis.Connection do
   end
 
   # TODO handle incomplete messages.
-  @spec handle_new_data(%__MODULE__{}) :: %__MODULE__{}
+  @spec handle_new_data(t()) :: t()
   defp handle_new_data(%__MODULE__{} = state) do
     case state.buffer do
       # Done, nothing more to handle.
@@ -117,7 +120,7 @@ defmodule Redis.Connection do
     end
   end
 
-  @spec handle_new_data_impl(%__MODULE__{}) :: %__MODULE__{}
+  @spec handle_new_data_impl(t()) :: t()
   defp handle_new_data_impl(%__MODULE__{} = state) do
     # Handle the special case of reading the incoming RDB file (which is not RESP encoded).
     {new_state, rest} =
@@ -155,7 +158,7 @@ defmodule Redis.Connection do
     handle_new_data(put_in(new_state.buffer, rest))
   end
 
-  @spec handle_incoming_rdb_dump(%__MODULE__{}) :: {%__MODULE__{}, binary()}
+  @spec handle_incoming_rdb_dump(t()) :: {t(), binary()}
   defp handle_incoming_rdb_dump(%__MODULE__{} = state) do
     # Grab the length of the RDB data from the header.
     "$" <> msg_with_header = state.buffer
@@ -175,7 +178,7 @@ defmodule Redis.Connection do
   end
 
   # Return the new state after handling the request (possibly by replying over this Connection or other Connections).
-  @spec handle_request(%__MODULE__{}, [binary(), ...] | binary()) :: {:ok, %__MODULE__{}} | :error
+  @spec handle_request(t(), [binary(), ...] | binary()) :: {:ok, t()} | :error
 
   ## Replica-only message handling (for replication updates). NOTE: we update our offset count based on these replication messages we get from master.
   # If we receive replication updates from master, apply them but do not reply.
@@ -358,7 +361,7 @@ defmodule Redis.Connection do
          %__MODULE__{handshake_status: :ping_received} = state,
          ["REPLCONF", "listening-port", _port]
        ) do
-    :ok = send_message(state, simple_string_request("OK"))
+    :ok = reply_ok(state)
     {:ok, put_in(state.handshake_status, :replconf_one_received)}
   end
 
@@ -367,7 +370,7 @@ defmodule Redis.Connection do
          %__MODULE__{handshake_status: :replconf_one_received} = state,
          ["REPLCONF", "capa", "psync2"]
        ) do
-    :ok = send_message(state, simple_string_request("OK"))
+    :ok = reply_ok(state)
     {:ok, put_in(state.handshake_status, :replconf_two_received)}
   end
 
@@ -511,7 +514,7 @@ defmodule Redis.Connection do
     Redis.Commands.XRead.handle(state, request)
   end
 
-  ## Helpers and utility functions.
+  ## Helpers and utility functions. These really belong in their own modules with the handlers that use them.
 
   @spec wait_for_num_replicas_to_reach_offset(
           list(pid()),
@@ -554,11 +557,13 @@ defmodule Redis.Connection do
     end
   end
 
+  @spec send_message(t(), iodata()) :: :ok
   def send_message(%__MODULE__{socket: socket, send_fn: send_fn}, message) do
     send_message_on_socket(socket, send_fn, message)
   end
 
-  defp send_message_on_socket(socket, send_fn, message) do
+  @spec send_message_on_socket(:gen_tcp.socket(), send_fn_t(), iodata()) :: :ok
+  def send_message_on_socket(socket, send_fn, message) do
     case send_fn.(socket, message) do
       :ok ->
         :ok
@@ -593,12 +598,18 @@ defmodule Redis.Connection do
   defp integer_request(input), do: RESP.encode(input, :integer)
   defp array_request(input) when is_list(input), do: RESP.encode(input, :array)
 
-  defp get_request_encoded_length(request) do
+  @spec get_request_encoded_length([binary(), ...]) :: non_neg_integer()
+  def get_request_encoded_length(request) do
     case request do
       [_ | _] ->
         IO.iodata_length(array_request(request))
 
         # TODO support other kinds of requests later. Right now I don't expect there to be other types used.
     end
+  end
+
+  @spec reply_ok(t()) :: :ok
+  def reply_ok(connection) do
+    send_message(connection, RESP.encode("OK", :simple_string))
   end
 end

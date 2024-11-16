@@ -7,7 +7,7 @@ defmodule Redis.CLIConfig do
   @type t :: %__MODULE__{port: integer() | nil, replicaof: binary() | nil}
   defstruct [:port, :replicaof]
 
-  @spec create(keyword()) :: %__MODULE__{}
+  @spec create(keyword()) :: t()
   def create(opts) do
     %__MODULE__{
       port: Keyword.get(opts, :port, 6379),

@@ -26,12 +26,12 @@ defmodule Redis.Commands.XRead do
 
   @spec handle(Connection.t(), [binary(), ...]) :: {:ok, Connection.t()}
   def handle(connection, ["XREAD" | list_of_args]) do
-    handle_xread_request(resolve_xread_args(connection, list_of_args))
+    handle_request(resolve_args(connection, list_of_args))
   end
 
   # Single xread request, no blocking/waiting. This is also called "asynchronous".
-  @spec handle_xread_request(t()) :: {:ok, Connection.t()}
-  defp handle_xread_request(%__MODULE__{block_timeout_epoch_ms: :none} = xread_request) do
+  @spec handle_request(t()) :: {:ok, Connection.t()}
+  defp handle_request(%__MODULE__{block_timeout_epoch_ms: :none} = xread_request) do
     case xread_impl(xread_request) do
       # If nothing was sent, we need to send a nil response.
       {:error, :nothing_to_send} ->
@@ -45,18 +45,18 @@ defmodule Redis.Commands.XRead do
   end
 
   # Recursively call handle xread in "blocking" mode with an infinite timeout.
-  defp handle_xread_request(%__MODULE__{block_timeout_epoch_ms: :infinity} = xread_request) do
+  defp handle_request(%__MODULE__{block_timeout_epoch_ms: :infinity} = xread_request) do
     xread_request_to_use =
       case xread_impl(xread_request) do
         {:ok, next_xread_request} -> next_xread_request
         {:error, :nothing_to_send} -> xread_request
       end
 
-    handle_xread_request(xread_request_to_use)
+    handle_request(xread_request_to_use)
   end
 
   # Finitely recurse in blocking mode (checking for timeout every time).
-  defp handle_xread_request(xread_request) do
+  defp handle_request(xread_request) do
     if System.os_time(:millisecond) > xread_request.block_timeout_epoch_ms do
       :ok = Connection.send_message(xread_request.connection, RESP.encode("", :bulk_string))
       {:ok, xread_request.connection}
@@ -67,7 +67,7 @@ defmodule Redis.Commands.XRead do
           {:error, :nothing_to_send} -> xread_request
         end
 
-      handle_xread_request(xread_request_to_use)
+      handle_request(xread_request_to_use)
     end
   end
 
@@ -129,8 +129,8 @@ defmodule Redis.Commands.XRead do
     end
   end
 
-  @spec resolve_xread_args(Connection.t(), [binary(), ...]) :: t()
-  defp resolve_xread_args(connection, list_of_args) do
+  @spec resolve_args(Connection.t(), [binary(), ...]) :: t()
+  defp resolve_args(connection, list_of_args) do
     {block_timeout_epoch_ms, rest} =
       case list_of_args do
         ["block", timeout_ms | rest] ->

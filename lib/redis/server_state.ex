@@ -10,13 +10,14 @@ defmodule Redis.ServerState do
   alias Redis.ServerInfo
   alias Redis.Connection
 
+  @enforce_keys [:cli_config, :server_info, :connected_replicas]
   @type t :: %__MODULE__{
-          cli_config: %CLIConfig{},
-          server_info: %ServerInfo{},
+          cli_config: CLIConfig.t(),
+          server_info: ServerInfo.t(),
           connected_replicas: %{:gen_tcp.socket() => pid()}
         }
 
-  defstruct cli_config: CLIConfig, server_info: ServerInfo, connected_replicas: %{}
+  defstruct [:cli_config, :server_info, :connected_replicas]
 
   @spec start_link(%__MODULE__{}) :: Agent.on_start()
   def start_link(init_data), do: Agent.start_link(fn -> init_data end, name: __MODULE__)

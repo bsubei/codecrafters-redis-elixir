@@ -4,7 +4,10 @@ defmodule Redis.ServerInfo do
   """
   require Logger
 
-  defstruct replication: __MODULE__.Replication
+  @type t :: %__MODULE__{
+          replication: __MODULE__.Replication.t()
+        }
+  defstruct [:replication]
 
   defmodule Replication do
     @moduledoc """
@@ -12,6 +15,7 @@ defmodule Redis.ServerInfo do
 
     role is always either :master or :slave
     """
+    @enforce_keys [:role, :master_replid]
     @type t :: %__MODULE__{
             role: atom(),
             master_replid: binary(),
