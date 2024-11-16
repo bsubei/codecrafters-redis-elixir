@@ -6,7 +6,7 @@ defmodule Redis.Commands.Multi do
     # TODO actually do stuff
 
     # Reply with ok.
-    Connection.reply_ok(connection)
+    :ok = Connection.reply_ok(connection)
 
     {:ok, connection}
   end

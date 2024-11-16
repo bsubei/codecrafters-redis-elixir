@@ -474,6 +474,10 @@ defmodule Redis.Connection do
     Redis.Commands.Multi.handle(state, request)
   end
 
+  defp handle_request(state, ["EXEC" | _rest] = request) do
+    Redis.Commands.Exec.handle(state, request)
+  end
+
   ## Helpers and utility functions. These really belong in their own modules with the handlers that use them.
 
   @spec wait_for_num_replicas_to_reach_offset(
