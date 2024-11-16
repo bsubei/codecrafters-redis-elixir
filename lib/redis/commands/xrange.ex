@@ -9,7 +9,7 @@ defmodule Redis.Commands.XRange do
   """
   alias Redis.{Connection, KeyValueStore, Stream, RESP}
 
-  @spec handle(%Connection{}, list(binary())) :: {:ok, %Connection{}}
+  @spec handle(Connection.t(), [binary(), ...]) :: {:ok, Connection.t()}
   def handle(connection, ["XRANGE", stream_key, start_entry_id, end_entry_id]) do
     # Resolve the entry ids, but don't allow "*".
     case [start_entry_id, end_entry_id] do

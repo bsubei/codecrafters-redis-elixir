@@ -187,6 +187,7 @@ defmodule Redis.Connection do
   ## Replica-only message handling (for replication updates). NOTE: we update our offset count based on these replication messages we get from master.
 
   # If we're a connected replica, reply to REPLCONF GETACK with the number of offset bytes so far (not including this request).
+  # TODO move to its own replication handshake module
   defp handle_request(
          %__MODULE__{handshake_status: :connected_to_master} = state,
          ["REPLCONF", "GETACK", "*"] = request
@@ -211,6 +212,7 @@ defmodule Redis.Connection do
   ## Master-only message handling. Every time we send something to the replica, we also add to our repl offset (and so does the replica if it receives these).
 
   # In the master-replica connections, handle REPLCONF ACK replies and store this offset so we know how up-to-date this replica is. These replica offsets will be used by the WAIT command.
+  # TODO move to its own replication handshake module
   defp handle_request(%__MODULE__{handshake_status: :connected_to_replica} = state, [
          "REPLCONF",
          "ACK",
@@ -295,6 +297,7 @@ defmodule Redis.Connection do
 
   ## Replies to handshake messages if we're a replica.
 
+  # TODO move to its own replication handshake module
   # If we get a simple string PONG back and we're a replica and we're expecting this reply, continue the handshake by sending the first replconf message.
   defp handle_request(%__MODULE__{handshake_status: :ping_sent} = state, "PONG") do
     :ok =
@@ -310,6 +313,7 @@ defmodule Redis.Connection do
     {:ok, put_in(state.handshake_status, :replconf_one_sent)}
   end
 
+  # TODO move to its own replication handshake module
   # If we get a simple string OK back and we're a replica and we just sent the first replconf, continue the handshake by sending the second replconf message.
   defp handle_request(
          %__MODULE__{handshake_status: :replconf_one_sent} = state,
@@ -324,6 +328,7 @@ defmodule Redis.Connection do
     {:ok, put_in(state.handshake_status, :replconf_two_sent)}
   end
 
+  # TODO move to its own replication handshake module
   # If we get a simple string OK back and we're a replica and we just sent the second replconf, continue the handshake by sending the PSYNC message.
   defp handle_request(
          %__MODULE__{handshake_status: :replconf_two_sent} = state,
@@ -338,6 +343,7 @@ defmodule Redis.Connection do
     {:ok, put_in(state.handshake_status, :psync_sent)}
   end
 
+  # TODO move to its own replication handshake module
   # If we get a simple string FULLRESYNC back and we're a replica and we just sent the psync, continue the handshake by updating our state and not sending anything (we're awaiting the RDB transfer).
   defp handle_request(
          %__MODULE__{handshake_status: :psync_sent} = state,
@@ -351,6 +357,7 @@ defmodule Redis.Connection do
 
   ## Replies to handshake messages if we're master.
 
+  # TODO move to its own replication handshake module
   # If we get a REPLCONF back and we're a master and we're expecting this reply, continue the handshake by replying with OK.
   defp handle_request(
          %__MODULE__{handshake_status: :ping_received} = state,
@@ -360,6 +367,7 @@ defmodule Redis.Connection do
     {:ok, put_in(state.handshake_status, :replconf_one_received)}
   end
 
+  # TODO move to its own replication handshake module
   # If we get a second REPLCONF back and we're a master and we're expecting this reply, continue the handshake by replying with OK.
   defp handle_request(
          %__MODULE__{handshake_status: :replconf_one_received} = state,
@@ -369,6 +377,7 @@ defmodule Redis.Connection do
     {:ok, put_in(state.handshake_status, :replconf_two_received)}
   end
 
+  # TODO move to its own replication handshake module
   # If we get a PSYNC back and we're a master and we're expecting this reply, finish the handshake by replying with FULLRESYNC and then the RDB file. We
   # consider the replica to be fully connected at this point, because we don't expect replies to our FULLRESYNC and RDB messages, and we can safely send replication updates after this point since the messages are in a queue.
   defp handle_request(
@@ -392,27 +401,13 @@ defmodule Redis.Connection do
   end
 
   ## Handle client requests.
-  # Always reply to any PING with a PONG. But also handle the case when this could be the start of a handshake from a replica to us (if we're master).
-  defp handle_request(%__MODULE__{role: :master} = state, ["PING"]) do
-    :ok = send_message(state, simple_string_request("PONG"))
-    {:ok, %__MODULE__{state | handshake_status: :ping_received}}
+
+  defp handle_request(state, ["PING" | _rest] = request) do
+    Redis.Commands.Ping.handle(state, request)
   end
 
-  defp handle_request(state, ["PING"]) do
-    :ok = send_message(state, simple_string_request("PONG"))
-    {:ok, state}
-  end
-
-  # Echo back the args if given a PING with args. Do not treat this as the start of a handshake.
-  defp handle_request(state, ["PING", arg]) do
-    :ok = send_message(state, bulk_string_request(arg))
-    {:ok, state}
-  end
-
-  # Echo back the args in our reply.
-  defp handle_request(state, ["ECHO", arg]) do
-    :ok = send_message(state, bulk_string_request(arg))
-    {:ok, state}
+  defp handle_request(state, ["ECHO", _rest] = request) do
+    Redis.Commands.Echo.handle(state, request)
   end
 
   # Get the requested key's value from our key-value store and make that our reply.

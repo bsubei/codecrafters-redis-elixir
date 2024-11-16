@@ -19,27 +19,33 @@ defmodule Redis.Commands.XAdd do
           stream_key: binary(),
           entry_id: binary(),
           connection: %Connection{},
-          field_value_pairs: list({binary(), binary()})
+          # Must have at least one pair.
+          field_value_pairs: [{binary(), binary()}, ...]
         }
   defstruct [:stream_key, :entry_id, :connection, :field_value_pairs]
 
-  @spec handle(%Connection{}, list(binary())) :: {:ok, %Connection{}}
-  def handle(connection, ["XADD", stream_key, entry_id | rest]) do
+  @spec handle(Connection.t(), list(binary())) :: {:ok, Connection.t()}
+  def handle(connection, ["XADD" | _rest] = request) do
+    xadd_impl(resolve_args(connection, request))
+  end
+
+  @spec resolve_args(Connection.t(), [binary(), ...]) :: t()
+  defp resolve_args(connection, ["XADD", stream_key, entry_id | rest]) do
     # First resolve this entry id (i.e. handle any "*").
     stream = KeyValueStore.get_stream(stream_key)
 
     {:ok, resolved_entry_id} = Stream.resolve_entry_id(stream, entry_id)
 
-    xadd_impl(%__MODULE__{
+    %__MODULE__{
       stream_key: stream_key,
       entry_id: resolved_entry_id,
       connection: connection,
       # Validate and parse the key-value arguments, which must come in pairs.
       field_value_pairs: make_pairs_from_consecutive_elements(rest)
-    })
+    }
   end
 
-  @spec xadd_impl(%__MODULE__{}) :: {:ok, %Connection{}}
+  @spec xadd_impl(%__MODULE__{}) :: {:ok, Connection.t()}
   defp xadd_impl(request) do
     entry = %Stream.Entry{
       id: request.entry_id,
@@ -85,8 +91,9 @@ defmodule Redis.Commands.XAdd do
     {:ok, request.connection}
   end
 
-  @spec make_pairs_from_consecutive_elements(list(binary())) :: list({binary(), binary()})
-  defp make_pairs_from_consecutive_elements(pairs = [_key1, _value1 | _rest]) do
+  @spec make_pairs_from_consecutive_elements(list(binary())) :: [{binary(), binary()}, ...]
+  defp make_pairs_from_consecutive_elements(pairs = [_key1, _value1 | _rest])
+       when rem(length(pairs), 2) == 0 do
     # Input: [key1, val1, key2, val2]
     # Output: [{key1, val1}, {key2, val2}]
     pairs
