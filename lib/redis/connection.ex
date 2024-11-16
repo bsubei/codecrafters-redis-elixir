@@ -190,8 +190,26 @@ defmodule Redis.Connection do
   # Return the new state after handling the request (possibly by replying over this Connection or other Connections).
   @spec handle_request(t(), [binary(), ...] | binary()) :: {:ok, t()} | :error
 
-  defp handle_request(connection, ["SET" | _rest] = request) do
-    Redis.Commands.Set.handle(connection, request)
+  # If we're in a transaction, catch all commands here.
+  defp handle_request(%__MODULE__{queued_transaction_commands: cmds} = state, request)
+       when cmds != nil do
+    # Unless this is an EXEC request (in which case we apply and end the transaction), just queue up this command in the transaction.
+    state =
+      case hd(request) do
+        "EXEC" ->
+          {:ok, state} = Redis.Commands.Exec.handle(state, request)
+          state
+
+        _ ->
+          :ok = send_message(state, RESP.encode("QUEUED", :simple_string))
+          update_in(state.queued_transaction_commands, fn queued -> queued ++ [request] end)
+      end
+
+    {:ok, state}
+  end
+
+  defp handle_request(state, ["SET" | _rest] = request) do
+    Redis.Commands.Set.handle(state, request)
   end
 
   ## Replica-only message handling (for replication updates). NOTE: we update our offset count based on these replication messages we get from master.
@@ -571,7 +589,7 @@ defmodule Redis.Connection do
   end
 
   @spec reply_ok(t()) :: :ok
-  def reply_ok(connection) do
-    send_message(connection, RESP.encode("OK", :simple_string))
+  def reply_ok(state) do
+    send_message(state, RESP.encode("OK", :simple_string))
   end
 end
