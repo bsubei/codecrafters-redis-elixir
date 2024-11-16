@@ -46,9 +46,19 @@ defmodule Redis.Connection do
           # If this Connection is between a master (us) and a replica (i.e. the handshake_status is :connected_to_replica), this field
           # stores the latest replication offset that the replica has informed us of when we asked it with "REPLCONF GETACK".
           replica_offset_count: integer(),
-          buffer: binary()
+          buffer: binary(),
+          # nil means there is no transaction in-progress, while a list means there is a transaction (with possibly zero or more queued commands).
+          queued_transaction_commands: nil | list(binary())
         }
-  defstruct [:socket, :send_fn, :handshake_status, :role, replica_offset_count: 0, buffer: <<>>]
+  defstruct [
+    :socket,
+    :send_fn,
+    :handshake_status,
+    :role,
+    replica_offset_count: 0,
+    buffer: <<>>,
+    queued_transaction_commands: nil
+  ]
 
   @spec start_link(%{
           # The socket must always be specified.
