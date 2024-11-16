@@ -13,7 +13,7 @@ defmodule Redis.Commands.Incr do
       case KeyValueStore.get(key) do
         # If it doesn't exist, default to 0.
         nil -> "0"
-        %Value{data: value, type: :string} -> value
+        %Value{data: value, type: :string} when is_binary(value) -> value
       end
 
     reply_message =
@@ -25,7 +25,7 @@ defmodule Redis.Commands.Incr do
 
         # If it can't be exactly represented as a base-10 signed integer, return an error message.
         :error ->
-          RESP.encode("value is not an integer or out of range", :simple_error)
+          RESP.encode("ERR value is not an integer or out of range", :simple_error)
       end
 
     :ok = Connection.send_message(connection, reply_message)
