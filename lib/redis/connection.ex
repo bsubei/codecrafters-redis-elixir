@@ -466,8 +466,12 @@ defmodule Redis.Connection do
     Redis.Commands.XRead.handle(state, request)
   end
 
-  defp handle_request(state, ["INCR", _rest] = request) do
+  defp handle_request(state, ["INCR" | _rest] = request) do
     Redis.Commands.Incr.handle(state, request)
+  end
+
+  defp handle_request(state, ["MULTI" | _rest] = request) do
+    Redis.Commands.Multi.handle(state, request)
   end
 
   ## Helpers and utility functions. These really belong in their own modules with the handlers that use them.
