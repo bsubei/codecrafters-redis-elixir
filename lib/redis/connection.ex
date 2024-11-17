@@ -192,29 +192,27 @@ defmodule Redis.Connection do
 
   # Return the new state after handling the request (possibly by replying over this Connection or other Connections).
   @spec handle_request(t(), [binary(), ...] | binary()) :: {:ok, t()} | :error
+
+  # If we're in a transaction, catch all commands here.
+  def handle_request(%__MODULE__{queued_transaction_commands: cmds} = state, request)
+      when cmds != nil do
+    # Unless this request is one of these commands, just queue it up in the transaction to be executed later.
+    allowed_cmds = ["EXEC", "DISCARD"]
+
+    if Enum.member?(allowed_cmds, hd(request)) do
+      handle_request_impl(state, request)
+    else
+      {:ok, state} = send_message(state, RESP.encode("QUEUED", :simple_string))
+      {:ok, update_in(state.queued_transaction_commands, fn queued -> queued ++ [request] end)}
+    end
+  end
+
+  # Outside of transactions, handle requests normally.
   def handle_request(state, request) do
     handle_request_impl(state, request)
   end
 
   @spec handle_request_impl(t(), [binary(), ...] | binary()) :: {:ok, t()} | :error
-
-  # If we're in a transaction, catch all commands here.
-  defp handle_request_impl(%__MODULE__{queued_transaction_commands: cmds} = state, request)
-       when cmds != nil do
-    # Unless this is an EXEC request (in which case we apply and end the transaction), just queue up this command in the transaction.
-    state =
-      case hd(request) do
-        "EXEC" ->
-          {:ok, state} = Redis.Commands.Exec.handle(state, request)
-          state
-
-        _ ->
-          {:ok, state} = send_message(state, RESP.encode("QUEUED", :simple_string))
-          update_in(state.queued_transaction_commands, fn queued -> queued ++ [request] end)
-      end
-
-    {:ok, state}
-  end
 
   defp handle_request_impl(state, ["SET" | _rest] = request) do
     Redis.Commands.Set.handle(state, request)
@@ -503,6 +501,10 @@ defmodule Redis.Connection do
 
   defp handle_request_impl(state, ["EXEC" | _rest] = request) do
     Redis.Commands.Exec.handle(state, request)
+  end
+
+  defp handle_request_impl(state, ["DISCARD" | _rest] = request) do
+    Redis.Commands.Discard.handle(state, request)
   end
 
   ## Helpers and utility functions. These really belong in their own modules with the handlers that use them.
