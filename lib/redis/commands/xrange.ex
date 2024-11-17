@@ -39,9 +39,7 @@ defmodule Redis.Commands.XRange do
               :error
           end
 
-        :ok = Connection.send_message(connection, reply_message)
-
-        {:ok, connection}
+        Connection.send_message(connection, reply_message)
     end
   end
 end

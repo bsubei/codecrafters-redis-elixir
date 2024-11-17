@@ -67,28 +67,22 @@ defmodule Redis.Commands.XAdd do
         error_message =
           "ERR The ID specified in XADD is equal or smaller than the target stream top item"
 
-        :ok =
-          Connection.send_message(request.connection, RESP.encode(error_message, :simple_error))
+        Connection.send_message(request.connection, RESP.encode(error_message, :simple_error))
 
       :error_zero ->
         error_message = "ERR The ID specified in XADD must be greater than 0-0"
-
-        :ok =
-          Connection.send_message(request.connection, RESP.encode(error_message, :simple_error))
+        Connection.send_message(request.connection, RESP.encode(error_message, :simple_error))
 
       stream ->
         :ok = KeyValueStore.set(request.stream_key, stream)
 
-        :ok =
-          Connection.send_message(
-            request.connection,
-            RESP.encode(request.entry_id, :bulk_string)
-          )
+        Connection.send_message(
+          request.connection,
+          RESP.encode(request.entry_id, :bulk_string)
+        )
 
         # TODO ignore replication for now since I don't have a way to test it.
     end
-
-    {:ok, request.connection}
   end
 
   @spec make_pairs_from_consecutive_elements(list(binary())) :: [{binary(), binary()}, ...]

@@ -28,10 +28,8 @@ defmodule Redis.Commands.Incr do
           RESP.encode("ERR value is not an integer or out of range", :simple_error)
       end
 
-    :ok = Connection.send_message(connection, reply_message)
-
     # TODO account for replication (offset count + relay)
 
-    {:ok, connection}
+    Connection.send_message(connection, reply_message)
   end
 end

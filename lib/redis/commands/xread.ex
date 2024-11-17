@@ -35,13 +35,11 @@ defmodule Redis.Commands.XRead do
     case xread_impl(xread_request) do
       # If nothing was sent, we need to send a nil response.
       {:error, :nothing_to_send} ->
-        :ok = Connection.send_message(xread_request.connection, RESP.encode("", :bulk_string))
+        Connection.send_message(xread_request.connection, RESP.encode("", :bulk_string))
 
       _ ->
-        nil
+        {:ok, xread_request.connection}
     end
-
-    {:ok, xread_request.connection}
   end
 
   # Recursively call handle xread in "blocking" mode with an infinite timeout.
@@ -58,8 +56,7 @@ defmodule Redis.Commands.XRead do
   # Finitely recurse in blocking mode (checking for timeout every time).
   defp handle_request(xread_request) do
     if System.os_time(:millisecond) > xread_request.block_timeout_epoch_ms do
-      :ok = Connection.send_message(xread_request.connection, RESP.encode("", :bulk_string))
-      {:ok, xread_request.connection}
+      Connection.send_message(xread_request.connection, RESP.encode("", :bulk_string))
     else
       xread_request_to_use =
         case xread_impl(xread_request) do
@@ -122,8 +119,8 @@ defmodule Redis.Commands.XRead do
       reply_message =
         Stream.multiple_stream_entries_to_resp(stream_key_entries_pairs)
 
-      :ok = Connection.send_message(xread_request.connection, reply_message)
-      {:ok, next_xread_request}
+      {:ok, new_connection} = Connection.send_message(xread_request.connection, reply_message)
+      {:ok, put_in(next_xread_request.connection, new_connection)}
     else
       {:error, :nothing_to_send}
     end

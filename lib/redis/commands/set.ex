@@ -58,7 +58,9 @@ defmodule Redis.Commands.Set do
   defp handle_request(request) do
     KeyValueStore.set(request.key, request.value, request.expiry_timestamp_epoch_ms)
 
-    :ok = Connection.reply_ok(request.connection)
+    ok = RESP.encode("OK", :simple_string)
+    {:ok, new_connection} = Connection.send_message(request.connection, ok)
+    request = put_in(request.connection, new_connection)
 
     # Relay any updates to all connected replicas except this current Connection. Note that we don't include the expiry terms in here.
     send_message_to_connected_replicas(request.connection, ["SET", request.key, request.value])

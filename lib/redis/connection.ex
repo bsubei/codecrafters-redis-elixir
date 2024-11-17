@@ -48,7 +48,9 @@ defmodule Redis.Connection do
           replica_offset_count: integer(),
           buffer: binary(),
           # nil means there is no transaction in-progress, while a list means there is a transaction (with possibly zero or more queued commands).
-          queued_transaction_commands: nil | list(binary())
+          queued_transaction_commands: nil | list(binary()),
+          # Even though handling a command may result in any number of messages sent back on the same/other sockets, this field holds the main response to a command to be used in EXEC.
+          last_sent_message: nil | binary() | list(binary())
         }
   defstruct [
     :socket,
@@ -57,7 +59,8 @@ defmodule Redis.Connection do
     :role,
     replica_offset_count: 0,
     buffer: <<>>,
-    queued_transaction_commands: nil
+    queued_transaction_commands: nil,
+    last_sent_message: nil
   ]
 
   @spec start_link(%{
@@ -189,9 +192,14 @@ defmodule Redis.Connection do
 
   # Return the new state after handling the request (possibly by replying over this Connection or other Connections).
   @spec handle_request(t(), [binary(), ...] | binary()) :: {:ok, t()} | :error
+  def handle_request(state, request) do
+    handle_request_impl(state, request)
+  end
+
+  @spec handle_request_impl(t(), [binary(), ...] | binary()) :: {:ok, t()} | :error
 
   # If we're in a transaction, catch all commands here.
-  defp handle_request(%__MODULE__{queued_transaction_commands: cmds} = state, request)
+  defp handle_request_impl(%__MODULE__{queued_transaction_commands: cmds} = state, request)
        when cmds != nil do
     # Unless this is an EXEC request (in which case we apply and end the transaction), just queue up this command in the transaction.
     state =
@@ -201,14 +209,14 @@ defmodule Redis.Connection do
           state
 
         _ ->
-          :ok = send_message(state, RESP.encode("QUEUED", :simple_string))
+          {:ok, state} = send_message(state, RESP.encode("QUEUED", :simple_string))
           update_in(state.queued_transaction_commands, fn queued -> queued ++ [request] end)
       end
 
     {:ok, state}
   end
 
-  defp handle_request(state, ["SET" | _rest] = request) do
+  defp handle_request_impl(state, ["SET" | _rest] = request) do
     Redis.Commands.Set.handle(state, request)
   end
 
@@ -216,23 +224,18 @@ defmodule Redis.Connection do
 
   # If we're a connected replica, reply to REPLCONF GETACK with the number of offset bytes so far (not including this request).
   # TODO move to its own replication handshake module
-  defp handle_request(
+  defp handle_request_impl(
          %__MODULE__{handshake_status: :connected_to_master} = state,
          ["REPLCONF", "GETACK", "*"] = request
        ) do
-    num_bytes_offset = ServerState.get_byte_offset_count()
-
-    :ok =
-      send_message(state, array_request(["REPLCONF", "ACK", Integer.to_string(num_bytes_offset)]))
-
+    original_offset = ServerState.get_byte_offset_count()
     ServerState.add_byte_offset_count(get_request_encoded_length(request))
-
-    {:ok, state}
+    send_message(state, array_request(["REPLCONF", "ACK", Integer.to_string(original_offset)]))
   end
 
   # NOTE: the order of this function relative to the other "overloads" is important, as it's a catch-all for the cases for messages coming from master.
   # If we're a connected replica, as a catch-all, do not reply to the messages from master unless it's a REPLCONF GETACK.
-  defp handle_request(%__MODULE__{handshake_status: :connected_to_master} = state, request) do
+  defp handle_request_impl(%__MODULE__{handshake_status: :connected_to_master} = state, request) do
     ServerState.add_byte_offset_count(get_request_encoded_length(request))
     {:ok, state}
   end
@@ -241,7 +244,7 @@ defmodule Redis.Connection do
 
   # In the master-replica connections, handle REPLCONF ACK replies and store this offset so we know how up-to-date this replica is. These replica offsets will be used by the WAIT command.
   # TODO move to its own replication handshake module
-  defp handle_request(%__MODULE__{handshake_status: :connected_to_replica} = state, [
+  defp handle_request_impl(%__MODULE__{handshake_status: :connected_to_replica} = state, [
          "REPLCONF",
          "ACK",
          num_bytes_offset
@@ -250,14 +253,13 @@ defmodule Redis.Connection do
     {:ok, put_in(state.replica_offset_count, num_bytes_offset)}
   end
 
-  defp handle_request(%__MODULE__{role: :master} = state, ["WAIT", "0", _timeout_ms]) do
-    :ok = send_message(state, integer_request("0"))
-    {:ok, state}
+  defp handle_request_impl(%__MODULE__{role: :master} = state, ["WAIT", "0", _timeout_ms]) do
+    send_message(state, integer_request("0"))
   end
 
   # Wait (block the connection) until the timeout or until this many replicas are up-to-date, and reply with the number of replicas that are up-to-date.
   # See https://redis.io/docs/latest/commands/wait/
-  defp handle_request(%__MODULE__{role: :master} = state, [
+  defp handle_request_impl(%__MODULE__{role: :master} = state, [
          "WAIT",
          num_required_replicas,
          timeout_ms
@@ -284,7 +286,7 @@ defmodule Redis.Connection do
     # Check if all the replicas are up to date or if we have enough already (nothing has been sent since the last time we checked).
     if num_up_to_date_replicas == num_connected_replicas or
          num_up_to_date_replicas >= num_required_replicas do
-      :ok = send_message(state, integer_request(num_up_to_date_replicas))
+      send_message(state, integer_request(num_up_to_date_replicas))
     else
       # Otherwise, we have to fetch the latest replica offsets and keep checking until the replicas are up-to-date.
       # TODO timeout of 0 means block forever, handle that.
@@ -294,41 +296,42 @@ defmodule Redis.Connection do
       getack_request = ["REPLCONF", "GETACK", "*"]
 
       Enum.map(Map.keys(connected_replicas), fn replica_socket ->
-        send_message_on_socket(
-          replica_socket,
-          state.send_fn,
-          array_request(getack_request)
-        )
+        :ok =
+          send_message_on_socket(
+            replica_socket,
+            state.send_fn,
+            array_request(getack_request)
+          )
       end)
 
       # Until the timeout hits, keep reading the replica offsets until we have the minimum required number of replicas reach the required master repl offset.
-      case wait_for_num_replicas_to_reach_offset(
-             Map.values(connected_replicas),
-             num_required_replicas,
-             current_master_offset,
-             expiry_timestamp_epoch_ms,
-             num_up_to_date_replicas
-           ) do
-        # Actually reply with the result either way, even if we time out.
-        {:ok, num_up_to_date_replicas} ->
-          :ok = send_message(state, integer_request(num_up_to_date_replicas))
+      {:ok, state} =
+        case wait_for_num_replicas_to_reach_offset(
+               Map.values(connected_replicas),
+               num_required_replicas,
+               current_master_offset,
+               expiry_timestamp_epoch_ms,
+               num_up_to_date_replicas
+             ) do
+          # Actually reply with the result either way, even if we time out.
+          {:ok, num_up_to_date_replicas} ->
+            send_message(state, integer_request(num_up_to_date_replicas))
 
-        {:timeout, num_up_to_date_replicas} ->
-          :ok = send_message(state, integer_request(num_up_to_date_replicas))
-      end
+          {:timeout, num_up_to_date_replicas} ->
+            send_message(state, integer_request(num_up_to_date_replicas))
+        end
 
       ServerState.add_byte_offset_count(get_request_encoded_length(getack_request))
+      {:ok, state}
     end
-
-    {:ok, state}
   end
 
   ## Replies to handshake messages if we're a replica.
 
   # TODO move to its own replication handshake module
   # If we get a simple string PONG back and we're a replica and we're expecting this reply, continue the handshake by sending the first replconf message.
-  defp handle_request(%__MODULE__{handshake_status: :ping_sent} = state, "PONG") do
-    :ok =
+  defp handle_request_impl(%__MODULE__{handshake_status: :ping_sent} = state, "PONG") do
+    {:ok, state} =
       send_message(
         state,
         array_request([
@@ -343,11 +346,11 @@ defmodule Redis.Connection do
 
   # TODO move to its own replication handshake module
   # If we get a simple string OK back and we're a replica and we just sent the first replconf, continue the handshake by sending the second replconf message.
-  defp handle_request(
+  defp handle_request_impl(
          %__MODULE__{handshake_status: :replconf_one_sent} = state,
          "OK"
        ) do
-    :ok =
+    {:ok, state} =
       send_message(
         state,
         array_request(["REPLCONF", "capa", "psync2"])
@@ -358,11 +361,11 @@ defmodule Redis.Connection do
 
   # TODO move to its own replication handshake module
   # If we get a simple string OK back and we're a replica and we just sent the second replconf, continue the handshake by sending the PSYNC message.
-  defp handle_request(
+  defp handle_request_impl(
          %__MODULE__{handshake_status: :replconf_two_sent} = state,
          "OK"
        ) do
-    :ok =
+    {:ok, state} =
       send_message(
         state,
         array_request(["PSYNC", "?", "-1"])
@@ -373,7 +376,7 @@ defmodule Redis.Connection do
 
   # TODO move to its own replication handshake module
   # If we get a simple string FULLRESYNC back and we're a replica and we just sent the psync, continue the handshake by updating our state and not sending anything (we're awaiting the RDB transfer).
-  defp handle_request(
+  defp handle_request_impl(
          %__MODULE__{handshake_status: :psync_sent} = state,
          <<"FULLRESYNC", _rest::binary>>
        ) do
@@ -387,40 +390,40 @@ defmodule Redis.Connection do
 
   # TODO move to its own replication handshake module
   # If we get a REPLCONF back and we're a master and we're expecting this reply, continue the handshake by replying with OK.
-  defp handle_request(
+  defp handle_request_impl(
          %__MODULE__{handshake_status: :ping_received} = state,
          ["REPLCONF", "listening-port", _port]
        ) do
-    :ok = reply_ok(state)
+    {:ok, state} = send_message(state, RESP.encode("OK", :simple_string))
     {:ok, put_in(state.handshake_status, :replconf_one_received)}
   end
 
   # TODO move to its own replication handshake module
   # If we get a second REPLCONF back and we're a master and we're expecting this reply, continue the handshake by replying with OK.
-  defp handle_request(
+  defp handle_request_impl(
          %__MODULE__{handshake_status: :replconf_one_received} = state,
          ["REPLCONF", "capa", "psync2"]
        ) do
-    :ok = reply_ok(state)
+    {:ok, state} = send_message(state, RESP.encode("OK", :simple_string))
     {:ok, put_in(state.handshake_status, :replconf_two_received)}
   end
 
   # TODO move to its own replication handshake module
   # If we get a PSYNC back and we're a master and we're expecting this reply, finish the handshake by replying with FULLRESYNC and then the RDB file. We
   # consider the replica to be fully connected at this point, because we don't expect replies to our FULLRESYNC and RDB messages, and we can safely send replication updates after this point since the messages are in a queue.
-  defp handle_request(
+  defp handle_request_impl(
          %__MODULE__{handshake_status: :replconf_two_received} = state,
          ["PSYNC", "?", "-1"]
        ) do
     master_replid = ServerState.get_state().server_info.replication.master_replid
     first_reply = simple_string_request("FULLRESYNC #{master_replid} 0")
-    :ok = send_message(state, first_reply)
+    {:ok, state} = send_message(state, first_reply)
 
     # TODO for now, creating the RDB file is done synchronously here since it's just a hard-coded string. Eventually, creating the RDB file should be done asynchronously and then the reply created once that's ready.
     rdb_contents = Redis.RDB.get_rdb_file()
     rdb_byte_count = byte_size(rdb_contents)
     second_reply = "$#{rdb_byte_count}#{RESP.crlf()}#{rdb_contents}"
-    :ok = send_message(state, second_reply)
+    {:ok, state} = send_message(state, second_reply)
 
     # Mark this replica as connected and ready to receive write updates.
     ServerState.add_connected_replica(state, self())
@@ -430,16 +433,16 @@ defmodule Redis.Connection do
 
   ## Handle client requests.
 
-  defp handle_request(state, ["PING" | _rest] = request) do
+  defp handle_request_impl(state, ["PING" | _rest] = request) do
     Redis.Commands.Ping.handle(state, request)
   end
 
-  defp handle_request(state, ["ECHO", _rest] = request) do
+  defp handle_request_impl(state, ["ECHO", _rest] = request) do
     Redis.Commands.Echo.handle(state, request)
   end
 
   # Get the requested key's value from our key-value store and make that our reply.
-  defp handle_request(state, ["GET", key]) do
+  defp handle_request_impl(state, ["GET", key]) do
     # Note that replicas don't bother checking for expiry because the master will tell them to expire entries instead.
     value =
       case state.role do
@@ -448,25 +451,23 @@ defmodule Redis.Connection do
       end
 
     data = if value, do: value.data, else: ""
-    :ok = send_message(state, bulk_string_request(data))
-    {:ok, state}
+    reply_message = RESP.encode(data, :bulk_string)
+    send_message(state, reply_message)
   end
 
   # Reply with the contents of all the ServerInfo sections we have.
-  defp handle_request(state, ["INFO"]) do
+  defp handle_request_impl(state, ["INFO"]) do
     server_info_string = Redis.ServerInfo.to_string(ServerState.get_state().server_info)
-    :ok = send_message(state, bulk_string_request(server_info_string))
-    {:ok, state}
+    send_message(state, bulk_string_request(server_info_string))
   end
 
   # Reply with the contents of the specified ServerInfo section.
-  defp handle_request(state, ["INFO" | rest]) do
+  defp handle_request_impl(state, ["INFO" | rest]) do
     server_info_string = Redis.ServerInfo.to_string(ServerState.get_state().server_info, rest)
-    :ok = send_message(state, bulk_string_request(server_info_string))
-    {:ok, state}
+    send_message(state, bulk_string_request(server_info_string))
   end
 
-  defp handle_request(state, ["TYPE", key]) do
+  defp handle_request_impl(state, ["TYPE", key]) do
     value =
       case state.role do
         :master -> KeyValueStore.get(key)
@@ -474,35 +475,33 @@ defmodule Redis.Connection do
       end
 
     type = if value, do: value.type, else: :none
-    :ok = send_message(state, simple_string_request(Atom.to_string(type)))
-
-    {:ok, state}
+    send_message(state, simple_string_request(Atom.to_string(type)))
   end
 
   # Append a new entry to a stream when given an explicit stream key.
-  defp handle_request(state, ["XADD" | _rest] = request) do
+  defp handle_request_impl(state, ["XADD" | _rest] = request) do
     Redis.Commands.XAdd.handle(state, request)
   end
 
   # Get the entries in a stream from the specified start and end entry ids (both ends inclusive).
-  defp handle_request(state, ["XRANGE" | _rest] = request) do
+  defp handle_request_impl(state, ["XRANGE" | _rest] = request) do
     Redis.Commands.XRange.handle(state, request)
   end
 
   # XREAD is like an XRANGE where it only takes a start entry id (which is exclusive) and implicitly uses "-" for the end entry id.
-  defp handle_request(state, ["XREAD" | _rest] = request) do
+  defp handle_request_impl(state, ["XREAD" | _rest] = request) do
     Redis.Commands.XRead.handle(state, request)
   end
 
-  defp handle_request(state, ["INCR" | _rest] = request) do
+  defp handle_request_impl(state, ["INCR" | _rest] = request) do
     Redis.Commands.Incr.handle(state, request)
   end
 
-  defp handle_request(state, ["MULTI" | _rest] = request) do
+  defp handle_request_impl(state, ["MULTI" | _rest] = request) do
     Redis.Commands.Multi.handle(state, request)
   end
 
-  defp handle_request(state, ["EXEC" | _rest] = request) do
+  defp handle_request_impl(state, ["EXEC" | _rest] = request) do
     Redis.Commands.Exec.handle(state, request)
   end
 
@@ -549,9 +548,10 @@ defmodule Redis.Connection do
     end
   end
 
-  @spec send_message(t(), iodata()) :: :ok
-  def send_message(%__MODULE__{socket: socket, send_fn: send_fn}, message) do
-    send_message_on_socket(socket, send_fn, message)
+  # Sends the given message over the connection, returning the updated connection where this message is stored in the last_sent_message field.
+  @spec send_message(t(), iodata()) :: {:ok, t()}
+  def send_message(%__MODULE__{socket: socket, send_fn: send_fn} = state, message) do
+    {send_message_on_socket(socket, send_fn, message), put_in(state.last_sent_message, message)}
   end
 
   @spec send_message_on_socket(:gen_tcp.socket(), send_fn_t(), iodata()) :: :ok
@@ -586,10 +586,5 @@ defmodule Redis.Connection do
 
         # TODO support other kinds of requests later. Right now I don't expect there to be other types used.
     end
-  end
-
-  @spec reply_ok(t()) :: :ok
-  def reply_ok(state) do
-    send_message(state, RESP.encode("OK", :simple_string))
   end
 end
