@@ -8,21 +8,8 @@ defmodule Redis.Application do
 
   @impl true
   def start(_type, _args) do
-    {opts, _remaining_args, _invalid} =
-      OptionParser.parse(System.argv(),
-        strict: [port: :integer, replicaof: :string]
-      )
-
-    cli_config = Redis.CLIConfig.create(opts)
-
-    # We know we're a slave if we are provided the --replicaof CLI argument.
-    role =
-      case cli_config.replicaof do
-        nil -> :master
-        _ -> :slave
-      end
-
-    server_info = ServerInfo.init(role)
+    cli_config = Redis.CLIConfig.init()
+    server_info = ServerInfo.init(cli_config)
 
     children = [
       # Set up our key value store as empty.

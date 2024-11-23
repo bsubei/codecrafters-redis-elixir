@@ -9,9 +9,7 @@ defmodule Redis.Connection do
   """
   use GenServer
   require Logger
-  alias Redis.RESP
-  alias Redis.ServerState
-  alias Redis.KeyValueStore
+  alias Redis.{RESP, ServerState, KeyValueStore, Commands}
 
   # The handshake status must be one of these atoms:
   #
@@ -215,7 +213,7 @@ defmodule Redis.Connection do
   @spec handle_request_impl(t(), [binary(), ...] | binary()) :: {:ok, t()} | :error
 
   defp handle_request_impl(state, ["SET" | _rest] = request) do
-    Redis.Commands.Set.handle(state, request)
+    Commands.Set.handle(state, request)
   end
 
   ## Replica-only message handling (for replication updates). NOTE: we update our offset count based on these replication messages we get from master.
@@ -414,7 +412,7 @@ defmodule Redis.Connection do
          ["PSYNC", "?", "-1"]
        ) do
     master_replid = ServerState.get_state().server_info.replication.master_replid
-    first_reply = simple_string_request("FULLRESYNC #{master_replid} 0")
+    first_reply = RESP.encode("FULLRESYNC #{master_replid} 0", :simple_string)
     {:ok, state} = send_message(state, first_reply)
 
     # TODO for now, creating the RDB file is done synchronously here since it's just a hard-coded string. Eventually, creating the RDB file should be done asynchronously and then the reply created once that's ready.
@@ -432,11 +430,11 @@ defmodule Redis.Connection do
   ## Handle client requests.
 
   defp handle_request_impl(state, ["PING" | _rest] = request) do
-    Redis.Commands.Ping.handle(state, request)
+    Commands.Ping.handle(state, request)
   end
 
   defp handle_request_impl(state, ["ECHO", _rest] = request) do
-    Redis.Commands.Echo.handle(state, request)
+    Commands.Echo.handle(state, request)
   end
 
   # Get the requested key's value from our key-value store and make that our reply.
@@ -453,16 +451,12 @@ defmodule Redis.Connection do
     send_message(state, reply_message)
   end
 
-  # Reply with the contents of all the ServerInfo sections we have.
-  defp handle_request_impl(state, ["INFO"]) do
-    server_info_string = Redis.ServerInfo.to_string(ServerState.get_state().server_info)
-    send_message(state, bulk_string_request(server_info_string))
+  defp handle_request_impl(state, ["INFO" | _rest] = request) do
+    Commands.Info.handle(state, request)
   end
 
-  # Reply with the contents of the specified ServerInfo section.
-  defp handle_request_impl(state, ["INFO" | rest]) do
-    server_info_string = Redis.ServerInfo.to_string(ServerState.get_state().server_info, rest)
-    send_message(state, bulk_string_request(server_info_string))
+  defp handle_request_impl(state, ["CONFIG" | _rest] = request) do
+    Commands.Config.handle(state, request)
   end
 
   defp handle_request_impl(state, ["TYPE", key]) do
@@ -473,38 +467,38 @@ defmodule Redis.Connection do
       end
 
     type = if value, do: value.type, else: :none
-    send_message(state, simple_string_request(Atom.to_string(type)))
+    send_message(state, RESP.encode(Atom.to_string(type), :simple_string))
   end
 
   # Append a new entry to a stream when given an explicit stream key.
   defp handle_request_impl(state, ["XADD" | _rest] = request) do
-    Redis.Commands.XAdd.handle(state, request)
+    Commands.XAdd.handle(state, request)
   end
 
   # Get the entries in a stream from the specified start and end entry ids (both ends inclusive).
   defp handle_request_impl(state, ["XRANGE" | _rest] = request) do
-    Redis.Commands.XRange.handle(state, request)
+    Commands.XRange.handle(state, request)
   end
 
   # XREAD is like an XRANGE where it only takes a start entry id (which is exclusive) and implicitly uses "-" for the end entry id.
   defp handle_request_impl(state, ["XREAD" | _rest] = request) do
-    Redis.Commands.XRead.handle(state, request)
+    Commands.XRead.handle(state, request)
   end
 
   defp handle_request_impl(state, ["INCR" | _rest] = request) do
-    Redis.Commands.Incr.handle(state, request)
+    Commands.Incr.handle(state, request)
   end
 
   defp handle_request_impl(state, ["MULTI" | _rest] = request) do
-    Redis.Commands.Multi.handle(state, request)
+    Commands.Multi.handle(state, request)
   end
 
   defp handle_request_impl(state, ["EXEC" | _rest] = request) do
-    Redis.Commands.Exec.handle(state, request)
+    Commands.Exec.handle(state, request)
   end
 
   defp handle_request_impl(state, ["DISCARD" | _rest] = request) do
-    Redis.Commands.Discard.handle(state, request)
+    Commands.Discard.handle(state, request)
   end
 
   ## Helpers and utility functions. These really belong in their own modules with the handlers that use them.
@@ -570,9 +564,6 @@ defmodule Redis.Connection do
         :ok
     end
   end
-
-  defp simple_string_request(input), do: RESP.encode(input, :simple_string)
-  defp bulk_string_request(input), do: RESP.encode(input, :bulk_string)
 
   defp integer_request(input) when is_integer(input),
     do: integer_request(Integer.to_string(input))
