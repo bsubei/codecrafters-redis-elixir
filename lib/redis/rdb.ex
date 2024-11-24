@@ -15,7 +15,7 @@ defmodule Redis.RDB do
       {:ok, file} ->
         case IO.binread(file, :eof) do
           {:error, reason} -> {:error, reason}
-          rdb_data -> decode_rdb(rdb_data)
+          rdb_data -> decode_rdb(IO.iodata_to_binary(rdb_data))
         end
 
       error_w_reason ->
@@ -23,7 +23,7 @@ defmodule Redis.RDB do
     end
   end
 
-  @spec decode_rdb(iodata()) :: {:ok, KeyValueStore.data_t()} | {:error, atom()}
+  @spec decode_rdb(binary()) :: {:ok, KeyValueStore.data_t()} | {:error, atom()}
   def decode_rdb(rdb_data) do
     case __MODULE__.Header.decode(rdb_data) do
       {:ok, _header, _rest} ->
@@ -48,10 +48,10 @@ defmodule Redis.RDB.Header do
     if(version < 9, do: {:error, :version_too_old}, else: {:ok, %__MODULE__{version: version}})
   end
 
-  @spec decode(iodata()) :: {:ok, t(), iodata()} | error_t()
+  @spec decode(binary()) :: {:ok, t(), binary()} | error_t()
 
   def decode(<<@magic_string::binary, version::binary-size(4), rest::binary>>) do
-    # Look for the magic string, then extract the version. Return the header version and the rest of the data.
+    # Look for the magic string, then extract the version (an integer as 4 ASCII bytes). Return the header version and the rest of the data.
 
     case init(String.to_integer(version)) do
       {:ok, header} -> {:ok, header, rest}
@@ -60,6 +60,6 @@ defmodule Redis.RDB.Header do
   end
 
   def decode(_data) do
-    {:error, :invalid_file_format}
+    {:error, :invalid_header_section}
   end
 end
