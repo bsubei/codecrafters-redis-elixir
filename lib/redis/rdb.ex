@@ -9,14 +9,21 @@ defmodule Redis.RDB do
   end
 
   @spec decode_rdb_file(binary()) :: {:ok, KeyValueStore.data_t()} | {:error, atom()}
-  def decode_rdb_file(dbfilename) do
-    # TODO read file, return :file_does_not_exist error reason
-    rdb_data = []
-    # TODO decode it
-    decode_rdb(rdb_data)
+  def decode_rdb_file(filepath) do
+    case File.open(filepath, [:read, :binary]) do
+      {:ok, file} ->
+        case IO.binread(file, :eof) do
+          {:error, reason} -> {:error, reason}
+          rdb_data -> decode_rdb(rdb_data)
+        end
+
+      error_w_reason ->
+        error_w_reason
+    end
   end
 
   @spec decode_rdb(iodata()) :: {:ok, KeyValueStore.data_t()} | {:error, atom()}
   def decode_rdb(rdb_data) do
+    {:ok, %{}}
   end
 end

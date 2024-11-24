@@ -31,6 +31,11 @@ defmodule Redis.KeyValueStore do
     end
   end
 
+  @spec get_all_keys() :: list(%Value{})
+  def get_all_keys() do
+    Agent.get(__MODULE__, &Map.keys/1)
+  end
+
   @spec set(binary(), binary() | Stream.t(), number() | nil) :: :ok
   def set(key, data, expiry_timestamp_epoch_ms \\ nil) do
     Agent.update(__MODULE__, &Map.put(&1, key, Value.init(data, expiry_timestamp_epoch_ms)))

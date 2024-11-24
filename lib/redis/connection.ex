@@ -427,6 +427,7 @@ defmodule Redis.Connection do
     {:ok, put_in(state.handshake_status, :connected_to_replica)}
   end
 
+  # TODO think of a way (macros?) to reduce boilerplate.
   ## Handle client requests.
 
   defp handle_request_impl(state, ["PING" | _rest] = request) do
@@ -437,18 +438,12 @@ defmodule Redis.Connection do
     Commands.Echo.handle(state, request)
   end
 
-  # Get the requested key's value from our key-value store and make that our reply.
-  defp handle_request_impl(state, ["GET", key]) do
-    # Note that replicas don't bother checking for expiry because the master will tell them to expire entries instead.
-    value =
-      case state.role do
-        :master -> KeyValueStore.get(key)
-        :slave -> KeyValueStore.get(key, :no_expiry)
-      end
+  defp handle_request_impl(state, ["GET" | _rest] = request) do
+    Commands.Get.handle(state, request)
+  end
 
-    data = if value, do: value.data, else: ""
-    reply_message = RESP.encode(data, :bulk_string)
-    send_message(state, reply_message)
+  defp handle_request_impl(state, ["KEYS" | _rest] = request) do
+    Commands.Keys.handle(state, request)
   end
 
   defp handle_request_impl(state, ["INFO" | _rest] = request) do

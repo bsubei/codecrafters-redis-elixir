@@ -50,7 +50,7 @@ defmodule Redis.Application do
           {:ok, rdb_data} ->
             rdb_data
 
-          {:error, :file_does_not_exist} ->
+          {:error, :enoent} ->
             IO.puts(
               "Could not find RDB file: #{filepath}, continuing with an empty KeyValueStore!"
             )
