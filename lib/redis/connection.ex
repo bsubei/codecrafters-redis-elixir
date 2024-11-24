@@ -416,7 +416,7 @@ defmodule Redis.Connection do
     {:ok, state} = send_message(state, first_reply)
 
     # TODO for now, creating the RDB file is done synchronously here since it's just a hard-coded string. Eventually, creating the RDB file should be done asynchronously and then the reply created once that's ready.
-    rdb_contents = Redis.RDB.get_rdb_file()
+    rdb_contents = Redis.RDB.get_empty_rdb()
     rdb_byte_count = byte_size(rdb_contents)
     second_reply = "$#{rdb_byte_count}#{RESP.crlf()}#{rdb_contents}"
     {:ok, state} = send_message(state, second_reply)

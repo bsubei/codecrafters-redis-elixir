@@ -1,7 +1,8 @@
 defmodule Redis.RDB do
   alias Redis.KeyValueStore
 
-  def get_rdb_file() do
+  @spec get_empty_rdb() :: binary()
+  def get_empty_rdb() do
     hardcoded_rdb_in_hex =
       "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2"
 
@@ -23,7 +24,7 @@ defmodule Redis.RDB do
   end
 
   @spec decode_rdb(iodata()) :: {:ok, KeyValueStore.data_t()} | {:error, atom()}
-  def decode_rdb(rdb_data) do
+  def decode_rdb(_rdb_data) do
     {:ok, %{}}
   end
 end
