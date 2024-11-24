@@ -7,7 +7,9 @@ defmodule Redis.KeyValueStore do
   use Agent
   alias Redis.{Stream, Value}
 
-  @spec start_link(%{binary() => %Value{}}) :: Agent.on_start()
+  @type data_t :: %{binary() => %Value{}}
+
+  @spec start_link(data_t()) :: Agent.on_start()
   def start_link(init_data), do: Agent.start_link(fn -> init_data end, name: __MODULE__)
 
   @spec get(binary(), :no_expiry) :: %Value{} | nil
@@ -34,6 +36,12 @@ defmodule Redis.KeyValueStore do
     Agent.update(__MODULE__, &Map.put(&1, key, Value.init(data, expiry_timestamp_epoch_ms)))
   end
 
+  @spec reset(data_t()) :: :ok
+  def reset(new_store) do
+    Agent.update(__MODULE__, fn _ -> new_store end)
+  end
+
+  @spec clear() :: :ok
   def clear(), do: Agent.update(__MODULE__, fn _ -> %{} end)
 
   @spec get_stream(binary()) :: Stream.t()
