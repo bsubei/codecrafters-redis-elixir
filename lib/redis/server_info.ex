@@ -83,28 +83,32 @@ defmodule Redis.ServerInfo do
   @spec get_human_readable_string(t(), list(binary()), iodata()) :: iodata()
   defp get_human_readable_string(_server_info, [], accumulator), do: accumulator
 
-  @spec get_human_readable_string(t(), list(binary()), iodata()) :: iodata()
-  defp get_human_readable_string(server_info, section_names_remaining, accumulator)
-       when is_list(section_names_remaining) do
+  defp get_human_readable_string(server_info, section_names_remaining, accumulator) do
     # Grab the first section name, e.g. :replication.
     [section_name | rest] = section_names_remaining
 
     # Convert the entire section to a "string", where each field is a string element in an iodata. Make sure to include a newline after each entry.
     section_header = "# #{section_name}\n"
 
-    section_contents =
-      Map.get(server_info, String.to_atom(section_name))
-      |> Map.from_struct()
-      |> Enum.map_join("\n", fn
-        {k, nil} -> "#{k}:"
-        {k, v} when is_atom(v) -> "#{k}:#{Atom.to_string(v)}"
-        {k, v} -> "#{k}:#{v}"
-      end)
+    new_acc =
+      case server_info |> Map.get(String.to_atom(section_name)) do
+        nil ->
+          accumulator
 
-    section_as_strings = [section_header, section_contents, "\n"]
+        section ->
+          section_contents =
+            Map.from_struct(section)
+            |> Enum.map_join("\n", fn
+              {k, nil} -> "#{k}:"
+              {k, v} when is_atom(v) -> "#{k}:#{Atom.to_string(v)}"
+              {k, v} -> "#{k}:#{v}"
+            end)
 
-    # Add this recent one to the accumulator and recurse.
-    new_acc = [accumulator, section_as_strings]
+          section_as_strings = [section_header, section_contents, "\n"]
+          [accumulator, section_as_strings]
+      end
+
+    # Add this section to the accumulator and recurse.
     get_human_readable_string(server_info, rest, new_acc)
   end
 
