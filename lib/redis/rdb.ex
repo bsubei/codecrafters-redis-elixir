@@ -15,7 +15,7 @@ defmodule Redis.RDB do
     Base.decode16!(hardcoded_rdb_in_hex, case: :lower)
   end
 
-  @spec decode_rdb_file(binary()) :: {:ok, KeyValueStore.data_t()} | {:error, atom()}
+  @spec decode_rdb_file(binary()) :: {:ok, list(KeyValueStore.data_t())} | {:error, atom()}
   def decode_rdb_file(filepath) do
     case File.open(filepath, [:read, :binary]) do
       {:ok, file} ->
@@ -29,7 +29,7 @@ defmodule Redis.RDB do
     end
   end
 
-  @spec decode_rdb(binary()) :: {:ok, KeyValueStore.data_t()} | decoding_error_t()
+  @spec decode_rdb(binary()) :: {:ok, list(KeyValueStore.data_t())} | decoding_error_t()
   def decode_rdb(rdb_data) do
     # TODO there must be a cleaner way to express this "pipeline" of data transformations.
     IO.puts("Decoding RDB file...")
@@ -39,15 +39,25 @@ defmodule Redis.RDB do
         IO.puts("Redis version #{header.version} detected...")
 
         case __MODULE__.Metadata.decode(rest) do
-          {:ok, metadata, rest} ->
-            IO.puts("#{map_size(metadata)} metadata fields parsed...")
+          {:ok, metadata_sections, rest} ->
+            IO.puts("Decoded #{length(metadata_sections)} metadata section(s)...")
+
+            IO.puts(
+              "The lengths of the metadata sections: #{inspect(metadata_sections |> Enum.map(&map_size(&1)))}..."
+            )
 
             case __MODULE__.Database.decode(rest) do
-              {:ok, database, rest} ->
-                case __MODULE__.EndOfFile.decode(rest) do
-                  {:ok, :eof, rest} ->
-                    # TODO use actual decoded values
-                    {:ok, %{}}
+              {:ok, database_sections, rest} ->
+                IO.puts("Decoded #{length(database_sections)} database section(s)...")
+
+                IO.puts(
+                  "The lengths of the database sections: #{inspect(database_sections |> Enum.map(&map_size(&1)))}..."
+                )
+
+                case __MODULE__.EndOfFile.decode(rest, rdb_data) do
+                  :ok ->
+                    # TODO return actual useful stuff
+                    {:ok, database_sections}
 
                   error_tuple ->
                     error_tuple
@@ -104,32 +114,85 @@ end
 defmodule Redis.RDB.Metadata do
   @type error_t :: {:error, :invalid_metadata_section}
   @type t :: %{binary() => binary()}
-
   @metadata_start 0xFA
 
-  @spec decode(binary()) :: {:ok, t(), binary()} | error_t()
+  @spec decode(binary(), list(t())) :: {:ok, list(t()), binary()} | error_t()
+  def decode(input, acc \\ [])
 
-  # TODO Zero or more metadata sections
-  def decode(<<@metadata_start, rest::binary>>) do
-    something = %{}
-    {:ok, something, rest}
+  # Decodes zero or more metadata sections.
+  def decode(<<@metadata_start, rest::binary>>, acc) do
+    # TODO parse the actual metadata section here
+    case rest do
+      "0" ->
+        {:error, :invalid_metadata_section}
+
+      _ ->
+        metadata_section = %{}
+        new_rest = rest
+        new_acc = acc ++ [metadata_section]
+        decode(new_rest, new_acc)
+    end
   end
 
-  def decode(_data) do
-    {:error, :invalid_metadata_section}
+  def decode(data, acc) do
+    {:ok, acc, data}
   end
 end
 
 defmodule Redis.RDB.Database do
   @type error_t :: {:error, :invalid_database_section}
-  def decode(_data) do
+  # Each database section gets parsed as a KeyValueStore.
+  @type t :: Redis.KeyValueStore.data_t()
+  @database_start 0xFE
+
+  @spec decode(binary(), list(t())) :: {:ok, list(t()), binary()} | error_t()
+  def decode(data, acc \\ [])
+
+  def decode(<<@database_start, rest::binary>>, acc) do
+    # TODO implement this
+    case rest do
+      "0" ->
+        {:error, :invalid_database_section}
+
+      _ ->
+        database_section = %{}
+        new_acc = acc ++ [database_section]
+        decode(rest, new_acc)
+    end
+  end
+
+  # If on the first database section decode we find no database start byte, this is an error.
+  def decode(_data, []) do
     {:error, :invalid_database_section}
+  end
+
+  # If on subsequent recursive calls we find no database start byte, then we've decoded enough.
+  def decode(data, acc) do
+    {:ok, acc, data}
   end
 end
 
 defmodule Redis.RDB.EndOfFile do
   @type error_t :: {:error, :invalid_eof_section}
-  def decode(_data) do
+  @eof_start 0xFF
+
+  @spec decode(binary(), binary()) :: :ok | error_t()
+
+  def decode(<<@eof_start, rest::binary>>, all_data) do
+    crc_check(all_data, rest)
+  end
+
+  def decode(_data, _all_data) do
     {:error, :invalid_eof_section}
+  end
+
+  @spec crc_check(binary(), binary()) :: :ok | error_t()
+  def crc_check(all_data, crc) do
+    # TODO actually implement
+    if all_data == crc do
+      :ok
+    else
+      {:error, :invalid_crc}
+    end
   end
 end
