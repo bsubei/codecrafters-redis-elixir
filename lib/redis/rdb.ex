@@ -121,7 +121,6 @@ defmodule Redis.RDB do
 
   def decode_length_prefix(<<0b01::2, length::14, rest::binary>>) do
     # Read one more byte, and together with the 6 LSBs, that's the length.
-    # TODO little vs big endian
     {:ok, length, rest}
   end
 

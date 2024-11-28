@@ -33,14 +33,6 @@ defmodule Redis.RDBTest do
   end
 
   describe "decoding string encoded values" do
-    # test "for invalid values" do
-    #   # If we're calling decode_length_prefix, the two most-significant bits better not be 0b11
-    #   assert RDB.decode_length_prefix(<<0b11::2, 0::6, "whatever">>) ==
-    #            {:error, :invalid_length_prefix}
-    # end
-
-    # TODO test length encoding using a range of ints to cover every case
-
     test "for length prefixed strings" do
       # The length of the string is stored in the 6 LSBs.
       {:ok, "ABCDE", "unused"} = RDB.decode_string(<<0b00::2, 5::6, "ABCDEunused">>)
@@ -63,10 +55,22 @@ defmodule Redis.RDBTest do
     end
 
     test "for integers as strings" do
+      # 8-bit integer
+      input = <<0b11::2, 0::6, 0x40::8, "rest">>
+      {:ok, "64", "rest"} = RDB.decode_string(input)
+      # 16-bit integer
+      input = <<0b11::2, 1::6, 42::integer-16-little, "rest">>
+      {:ok, "42", "rest"} = RDB.decode_string(input)
+      input = <<0b11::2, 1::6, 15003::16-integer-little, "rest">>
+      {:ok, "15003", "rest"} = RDB.decode_string(input)
+      # 32-bit integer
+      input = <<0b11::2, 2::6, 5_125_120::32-integer-little, "rest">>
+      {:ok, "5125120", "rest"} = RDB.decode_string(input)
     end
 
     test "for LZF compressed strings" do
-      # TODO expected unimplemented error
+      input = <<0b11::2, 3::6, "whatever doesn't matter">>
+      {:error, :unimplemented_lzf_string} = RDB.decode_string(input)
     end
   end
 
