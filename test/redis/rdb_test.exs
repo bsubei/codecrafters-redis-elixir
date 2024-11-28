@@ -88,24 +88,33 @@ defmodule Redis.RDBTest do
 
   describe "decode RDB Metadata" do
     test "given invalid data" do
-      {:error, :missing_metadata_start_byte} = RDB.Metadata.decode([])
-      {:error, :missing_metadata_start_byte} = RDB.Metadata.decode(<<"FOOBAR">>)
-      # TODO are such tests meaningful?
       {:error, :bad_metadata_key} = RDB.Metadata.decode(<<0xFA>>)
+      {:error, :bad_metadata_value} = RDB.Metadata.decode(<<0xFA, 0x04, "toad">>)
     end
 
-    # test "given a single metadata section" do
-    #   # TODO
-    #   expected_metadata_sections = [%{}]
-    #   input = <<0xFA>>
-    #   {:ok, ^expected_metadata_sections, ""} = RDB.Metadata.decode(input)
-    # end
+    test "given a single metadata section" do
+      expected_metadata_sections = %{"toad" => "chicken"}
+      input = <<0xFA, 0x04, "toad", 0x07, "chicken", "unused">>
+      {:ok, ^expected_metadata_sections, "unused"} = RDB.Metadata.decode(input)
+    end
 
-    # test "given a multiple metadata sections" do
-    #   # TODO
-    #   expected_metadata_sections = [%{}]
-    #   input = <<0xFA>>
-    #   {:ok, ^expected_metadata_sections, ""} = RDB.Metadata.decode(input)
-    # end
+    test "given a multiple metadata sections" do
+      # First section: "redis-ver" and "5.0.7"
+      # Second section: "redis-bits" and "64" as an 8-bit integer.
+      # Third section: "ctime" and a unix timestamp as a 64 bit integer.
+      bytes =
+        Base.decode16!("FA0972656469732D76657205352E302E37") <>
+          Base.decode16!("FA0A72656469732D62697473C040") <>
+          Base.decode16!("FA056374696D65C2B8764367") <>
+          "rest"
+
+      expected_metadata_sections = %{
+        "redis-ver" => "5.0.7",
+        "redis-bits" => "64",
+        "ctime" => "1732474552"
+      }
+
+      {:ok, ^expected_metadata_sections, "rest"} = RDB.Metadata.decode(bytes)
+    end
   end
 end

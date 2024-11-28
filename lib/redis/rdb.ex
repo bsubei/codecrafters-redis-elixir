@@ -76,8 +76,28 @@ defmodule Redis.RDB do
   @spec decode_string(binary()) :: {:ok, binary(), binary()} | {:error, atom()}
 
   # If the two MSBs are "0b11", then this is either an integer or an LZF compressed string.
-  def decode_string(<<0b11::2, lsbs::6, rest::binary>>) do
-    decode_special_string(lsbs, rest)
+  def decode_string(<<0b11::2, 0b00::6, num::integer-8-little, rest::binary>>) do
+    # The string is encoded as an 8-bit integer.
+    {:ok, Integer.to_string(num), rest}
+  end
+
+  def decode_string(<<0b11::2, 0b01::6, num::integer-16-little, rest::binary>>) do
+    # The string is encoded as a 16-bit little endian integer.
+    {:ok, Integer.to_string(num), rest}
+  end
+
+  def decode_string(<<0b11::2, 0b10::6, num::integer-32-little, rest::binary>>) do
+    # The string is encoded as a 32-bit little endian integer.
+    {:ok, Integer.to_string(num), rest}
+  end
+
+  def decode_string(<<0b11::2, 0b11::6, _rest::binary>>) do
+    # LZF compressed string, not implemented
+    {:error, :unimplemented_lzf_string}
+  end
+
+  def decode_string(<<0b11::2, _rest::binary>>) do
+    {:error, :invalid_string_encoding}
   end
 
   def decode_string(data) do
@@ -113,31 +133,6 @@ defmodule Redis.RDB do
   def decode_length_prefix(_) do
     # We don't expect the MSBs to be 0b11, that should never happen.
     {:error, :invalid_length_prefix}
-  end
-
-  @spec decode_special_string(byte(), binary()) :: {:ok, binary(), binary()} | {:error, atom()}
-  defp decode_special_string(0, <<length::8, data::binary-size(length), rest>>) do
-    # The next 8 bits are the length of the "integer as string" that follows.
-    {:ok, data, rest}
-  end
-
-  defp decode_special_string(1, <<length::16, data::binary-size(length), rest>>) do
-    # The next 16 bits are the length of the "integer as string" that follows.
-    {:ok, data, rest}
-  end
-
-  defp decode_special_string(2, <<length::32, data::binary-size(length), rest>>) do
-    # The next 32 bits are the length of the "integer as string" that follows.
-    {:ok, data, rest}
-  end
-
-  defp decode_special_string(3, _data) do
-    # LZF compressed string, not implemented
-    {:error, :unimplemented_lzf_string}
-  end
-
-  defp decode_special_string(_, _) do
-    {:error, :invalid_string_encoding}
   end
 end
 
@@ -193,18 +188,13 @@ defmodule Redis.RDB.Metadata do
     # TODO there must be one key-value pair in each metadata section
     case decode_metadata_pair(rest) do
       {:ok, key, value, new_rest} ->
-        # TODO
-        new_acc = %{acc | key => value}
+        # IO.puts("Decoded #{key}, #{value}, rest: #{inspect(new_rest, base: :hex)}")
+        new_acc = Map.merge(acc, %{key => value})
         decode(new_rest, new_acc)
 
       error_tuple ->
         error_tuple
     end
-  end
-
-  # If on the first database section decode we find no metadata start byte, this is an error.
-  def decode(_data, %{}) do
-    {:error, :missing_metadata_start_byte}
   end
 
   # If on subsequent recursive calls we find no metadata start byte, then we've decoded enough.
@@ -214,7 +204,6 @@ defmodule Redis.RDB.Metadata do
 
   @spec decode_metadata_pair(binary()) :: {:ok, binary(), binary(), binary()} | error_t()
   defp decode_metadata_pair(data) do
-    # TODO I don't think decode_string can meaningfully return an error. It'll always decode whatever bytes it finds and can't know if there's an "error"
     case Redis.RDB.decode_string(data) do
       {:ok, key, rest} ->
         case Redis.RDB.decode_string(rest) do
