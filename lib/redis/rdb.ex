@@ -39,12 +39,9 @@ defmodule Redis.RDB do
         IO.puts("Redis version #{header.version} detected...")
 
         case __MODULE__.Metadata.decode(rest) do
-          {:ok, metadata_sections, rest} ->
-            IO.puts("Decoded #{length(metadata_sections)} metadata section(s)...")
-
-            IO.puts(
-              "The lengths of the metadata sections: #{inspect(metadata_sections |> Enum.map(&map_size(&1)))}..."
-            )
+          {:ok, %{} = metadata_sections, rest} ->
+            IO.puts("Decoded #{map_size(metadata_sections)} metadata section(s):")
+            IO.puts("#{metadata_sections}")
 
             case __MODULE__.Database.decode(rest) do
               {:ok, database_sections, rest} ->
@@ -74,6 +71,73 @@ defmodule Redis.RDB do
       error_tuple ->
         error_tuple
     end
+  end
+
+  @spec decode_string(binary()) :: {:ok, binary(), binary()} | {:error, atom()}
+
+  # If the two MSBs are "0b11", then this is either an integer or an LZF compressed string.
+  def decode_string(<<0b11::2, lsbs::6, rest::binary>>) do
+    decode_special_string(lsbs, rest)
+  end
+
+  def decode_string(data) do
+    # Get the length from the prefix.
+    case decode_length_prefix(data) do
+      {:ok, length, rest} ->
+        # Now read that many bytes. That's our string.
+        <<bytes::binary-size(length), rest::binary>> = rest
+        {:ok, bytes, rest}
+
+      error_tuple ->
+        error_tuple
+    end
+  end
+
+  @spec decode_length_prefix(binary()) :: {:ok, non_neg_integer(), binary()} | {:error, atom()}
+  def decode_length_prefix(<<0b00::2, lsbs::6, rest::binary>>) do
+    # The 6 LSBs represent the length
+    {:ok, lsbs, rest}
+  end
+
+  def decode_length_prefix(<<0b01::2, length::14, rest::binary>>) do
+    # Read one more byte, and together with the 6 LSBs, that's the length.
+    # TODO little vs big endian
+    {:ok, length, rest}
+  end
+
+  def decode_length_prefix(<<0b10::2, _lsbs::6, length::32, rest::binary>>) do
+    # The next 4 bytes represent the length
+    {:ok, length, rest}
+  end
+
+  def decode_length_prefix(_) do
+    # We don't expect the MSBs to be 0b11, that should never happen.
+    {:error, :invalid_length_prefix}
+  end
+
+  @spec decode_special_string(byte(), binary()) :: {:ok, binary(), binary()} | {:error, atom()}
+  defp decode_special_string(0, <<length::8, data::binary-size(length), rest>>) do
+    # The next 8 bits are the length of the "integer as string" that follows.
+    {:ok, data, rest}
+  end
+
+  defp decode_special_string(1, <<length::16, data::binary-size(length), rest>>) do
+    # The next 16 bits are the length of the "integer as string" that follows.
+    {:ok, data, rest}
+  end
+
+  defp decode_special_string(2, <<length::32, data::binary-size(length), rest>>) do
+    # The next 32 bits are the length of the "integer as string" that follows.
+    {:ok, data, rest}
+  end
+
+  defp decode_special_string(3, _data) do
+    # LZF compressed string, not implemented
+    {:error, :unimplemented_lzf_string}
+  end
+
+  defp decode_special_string(_, _) do
+    {:error, :invalid_string_encoding}
   end
 end
 
@@ -112,30 +176,58 @@ end
 # used-mem: Used memory of the instance that wrote the RDB
 
 defmodule Redis.RDB.Metadata do
-  @type error_t :: {:error, :invalid_metadata_section}
+  @type error_t ::
+          {:error,
+           :missing_metadata_start_byte
+           | :bad_metadata_key
+           | :bad_metadata_value}
   @type t :: %{binary() => binary()}
   @metadata_start 0xFA
 
-  @spec decode(binary(), list(t())) :: {:ok, list(t()), binary()} | error_t()
-  def decode(input, acc \\ [])
+  @spec decode(binary(), t()) :: {:ok, t(), binary()} | error_t()
+  def decode(input, acc \\ %{})
 
   # Decodes zero or more metadata sections.
   def decode(<<@metadata_start, rest::binary>>, acc) do
     # TODO parse the actual metadata section here
-    case rest do
-      "0" ->
-        {:error, :invalid_metadata_section}
-
-      _ ->
-        metadata_section = %{}
-        new_rest = rest
-        new_acc = acc ++ [metadata_section]
+    # TODO there must be one key-value pair in each metadata section
+    case decode_metadata_pair(rest) do
+      {:ok, key, value, new_rest} ->
+        # TODO
+        new_acc = %{acc | key => value}
         decode(new_rest, new_acc)
+
+      error_tuple ->
+        error_tuple
     end
   end
 
+  # If on the first database section decode we find no metadata start byte, this is an error.
+  def decode(_data, %{}) do
+    {:error, :missing_metadata_start_byte}
+  end
+
+  # If on subsequent recursive calls we find no metadata start byte, then we've decoded enough.
   def decode(data, acc) do
     {:ok, acc, data}
+  end
+
+  @spec decode_metadata_pair(binary()) :: {:ok, binary(), binary(), binary()} | error_t()
+  defp decode_metadata_pair(data) do
+    # TODO I don't think decode_string can meaningfully return an error. It'll always decode whatever bytes it finds and can't know if there's an "error"
+    case Redis.RDB.decode_string(data) do
+      {:ok, key, rest} ->
+        case Redis.RDB.decode_string(rest) do
+          {:ok, value, rest} ->
+            {:ok, key, value, rest}
+
+          _error_tuple ->
+            {:error, :bad_metadata_value}
+        end
+
+      _error_tuple ->
+        {:error, :bad_metadata_key}
+    end
   end
 end
 
