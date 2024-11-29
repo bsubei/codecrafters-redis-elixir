@@ -14,6 +14,14 @@ defmodule Redis.RDBTest do
 
       {:error, :invalid_header_section} =
         RDB.decode_rdb("no way will thiswork because, this is just random text")
+
+      rdb_truncated_after_metadata_section =
+        Base.decode16!(
+          "524544495330303039fa0972656469732d76657205352e302e37fa0a72656469732d62697473c040fa056374696d65c2b8764367fa08757365642d6d656dc2f8260c00fa0c616f662d707265616d626c65c000",
+          case: :lower
+        )
+
+      {:error, :invalid_eof_section} = RDB.decode_rdb(rdb_truncated_after_metadata_section)
     end
 
     # test "given a valid empty RDB file" do
@@ -50,7 +58,7 @@ defmodule Redis.RDBTest do
 
       {:ok, ^expected_string, "unused"} =
         RDB.decode_string(
-          <<0b10::2, 0::6, expected_length::32, expected_string::binary, "unused">>
+          <<0b10::2, 0::6, expected_length::integer-32-little, expected_string::binary, "unused">>
         )
     end
 
@@ -61,10 +69,10 @@ defmodule Redis.RDBTest do
       # 16-bit integer
       input = <<0b11::2, 1::6, 42::integer-16-little, "rest">>
       {:ok, "42", "rest"} = RDB.decode_string(input)
-      input = <<0b11::2, 1::6, 15003::16-integer-little, "rest">>
+      input = <<0b11::2, 1::6, 15003::integer-16-little, "rest">>
       {:ok, "15003", "rest"} = RDB.decode_string(input)
       # 32-bit integer
-      input = <<0b11::2, 2::6, 5_125_120::32-integer-little, "rest">>
+      input = <<0b11::2, 2::6, 5_125_120::integer-32-little, "rest">>
       {:ok, "5125120", "rest"} = RDB.decode_string(input)
     end
 
@@ -120,5 +128,24 @@ defmodule Redis.RDBTest do
 
       {:ok, ^expected_metadata_sections, "rest"} = RDB.Metadata.decode(bytes)
     end
+  end
+
+  describe "decode RDB Database" do
+    # test "given invalid data" do
+    # {:error, :bad_metadata_key} = RDB.Metadata.decode(<<0xFA>>)
+    # {:error, :bad_metadata_value} = RDB.Metadata.decode(<<0xFA, 0x04, "toad">>)
+    # end
+
+    test "given a single database section" do
+      bytes = Base.decode16!("fe00fb01000002686903627965ff", case: :lower) <> "rest"
+
+      expected_database_sections = [
+        %{"hi" => %Redis.Value{data: "bye", type: :string, expiry_timestamp_epoch_ms: nil}}
+      ]
+
+      {:ok, ^expected_database_sections, <<0xFF, "rest">>} = RDB.Database.decode(bytes)
+    end
+
+    # TODO test multiple database sections with gaps. e.g. 2 databases with db indices 5 and 22 (should have 23 databases in the result, with only two populated)
   end
 end

@@ -39,9 +39,9 @@ defmodule Redis.RDB do
         IO.puts("Redis version #{header.version} detected...")
 
         case __MODULE__.Metadata.decode(rest) do
-          {:ok, %{} = metadata_sections, rest} ->
-            IO.puts("Decoded #{map_size(metadata_sections)} metadata section(s):")
-            IO.puts("#{metadata_sections}")
+          {:ok, %{} = metadata, rest} ->
+            IO.puts("Decoded #{map_size(metadata)} metadata entries:")
+            IO.puts("#{inspect(metadata)}")
 
             case __MODULE__.Database.decode(rest) do
               {:ok, database_sections, rest} ->
@@ -100,9 +100,13 @@ defmodule Redis.RDB do
     {:error, :invalid_string_encoding}
   end
 
+  def decode_string("") do
+    {:error, :nothing_to_decode}
+  end
+
   def decode_string(data) do
-    # Get the length from the prefix.
-    case decode_length_prefix(data) do
+    # A length-encoded int comes first and that's the length of our string.
+    case decode_int(data) do
       {:ok, length, rest} ->
         # Now read that many bytes. That's our string.
         <<bytes::binary-size(length), rest::binary>> = rest
@@ -113,25 +117,27 @@ defmodule Redis.RDB do
     end
   end
 
-  @spec decode_length_prefix(binary()) :: {:ok, non_neg_integer(), binary()} | {:error, atom()}
-  def decode_length_prefix(<<0b00::2, lsbs::6, rest::binary>>) do
+  @spec decode_int(binary()) :: {:ok, non_neg_integer(), binary()} | {:error, atom()}
+
+  @spec decode_int(binary()) :: {:ok, non_neg_integer(), binary()} | {:error, atom()}
+  def decode_int(<<0b00::2, lsbs::6, rest::binary>>) do
     # The 6 LSBs represent the length
     {:ok, lsbs, rest}
   end
 
-  def decode_length_prefix(<<0b01::2, length::14, rest::binary>>) do
+  def decode_int(<<0b01::2, length::14, rest::binary>>) do
     # Read one more byte, and together with the 6 LSBs, that's the length.
     {:ok, length, rest}
   end
 
-  def decode_length_prefix(<<0b10::2, _lsbs::6, length::32, rest::binary>>) do
-    # The next 4 bytes represent the length
+  def decode_int(<<0b10::2, _lsbs::6, length::integer-32-little, rest::binary>>) do
+    # The next 4 bytes (little endian) represent the length
     {:ok, length, rest}
   end
 
-  def decode_length_prefix(_) do
+  def decode_int(_) do
     # We don't expect the MSBs to be 0b11, that should never happen.
-    {:error, :invalid_length_prefix}
+    {:error, :invalid_length_encoded_int}
   end
 end
 
@@ -141,10 +147,14 @@ defmodule Redis.RDB.Header do
   defstruct [:version]
 
   @magic_string "REDIS"
+  @min_supported_version 9
 
   @spec init(non_neg_integer()) :: {:ok, Redis.RDB.Header.t()} | error_t()
   defp init(version) do
-    if(version < 9, do: {:error, :version_too_old}, else: {:ok, %__MODULE__{version: version}})
+    if(version < @min_supported_version,
+      do: {:error, :version_too_old},
+      else: {:ok, %__MODULE__{version: version}}
+    )
   end
 
   @spec decode(binary()) :: {:ok, t(), binary()} | error_t()
@@ -170,11 +180,7 @@ end
 # used-mem: Used memory of the instance that wrote the RDB
 
 defmodule Redis.RDB.Metadata do
-  @type error_t ::
-          {:error,
-           :missing_metadata_start_byte
-           | :bad_metadata_key
-           | :bad_metadata_value}
+  @type error_t :: {:error, :bad_metadata_key | :bad_metadata_value}
   @type t :: %{binary() => binary()}
   @metadata_start 0xFA
 
@@ -220,35 +226,165 @@ defmodule Redis.RDB.Metadata do
 end
 
 defmodule Redis.RDB.Database do
-  @type error_t :: {:error, :invalid_database_section}
-  # Each database section gets parsed as a KeyValueStore.
+  @type error_t :: {:error, :invalid_resizedb | :invalid_resizedb_expiry_number | :missing_eof}
+  # Each database subsection gets parsed as a KeyValueStore.
   @type t :: Redis.KeyValueStore.data_t()
   @database_start 0xFE
+  @resizedb_start 0xFB
+  @expiry_s_entry_start 0xFD
+  @expiry_ms_entry_start 0xFC
+  # Yes, this is also defined in another module, but it's never going to change, so it's fine.
+  @eof_start 0xFF
+
+  @spec decode_subsection(binary()) :: {:ok, {non_neg_integer(), t()}, binary()} | error_t()
+  defp decode_subsection(data) do
+    # Grab the index from the database selector, i.e. the index of the database we're about to decode.
+    <<db_index::8, rest::binary>> = data
+
+    # Grab the resizedb section, which is only used for validation in our case since we won't bother with pre-allocating the database hashmap.
+    case decode_resizedb(rest) do
+      {:ok, {num_total_entries, num_expiry_entries}, rest} ->
+        case decode_entries(rest) do
+          {:ok, entries = %{}, rest} ->
+            # validate total entries and expiry entries
+            case validate_entries(entries, num_total_entries, num_expiry_entries) do
+              :ok ->
+                {:ok, {db_index, entries}, rest}
+
+              error_tuple ->
+                error_tuple
+            end
+        end
+
+      error_tuple ->
+        error_tuple
+    end
+  end
+
+  @spec decode_resizedb(binary()) ::
+          {:ok, {non_neg_integer(), non_neg_integer()}, binary()} | error_t()
+  defp decode_resizedb(<<@resizedb_start, rest::binary>>) do
+    # The resizedb section simply has two length-encoded integers.
+    case Redis.RDB.decode_int(rest) do
+      {:ok, num_total_entries, rest} ->
+        case Redis.RDB.decode_int(rest) do
+          {:ok, num_expiry_entries, rest} ->
+            {:ok, {num_total_entries, num_expiry_entries}, rest}
+
+          _ ->
+            {:error, :invalid_resizedb}
+        end
+
+      _ ->
+        {:error, :invalid_resizedb}
+    end
+  end
+
+  defp decode_resizedb(_data), do: {:error, :invalid_resizedb}
+
+  @spec decode_entries(binary(), t()) :: {:ok, t(), binary()} | error_t()
+  defp decode_entries(data, acc \\ %{})
+  # NOTE: we don't strip off the eof or db first byte if we return without recursing.
+  # If we see the end of file, that's the end of this database section.
+  defp decode_entries(<<@eof_start, _rest::binary>> = data, acc), do: {:ok, acc, data}
+  # If we see the start of the next of the next db, that's the end of this database section.
+  defp decode_entries(<<@database_start, _rest::binary>> = data, acc), do: {:ok, acc, data}
+
+  defp decode_entries("", _acc) do
+    {:error, :missing_eof}
+  end
+
+  defp decode_entries(<<@expiry_s_entry_start, expiry_s::integer-32-little, rest::binary>>, acc) do
+    expiry_ms = expiry_s * 1000
+    decode_entries_impl(rest, acc, expiry_ms)
+  end
+
+  defp decode_entries(<<@expiry_ms_entry_start, expiry_ms::integer-64-little, rest::binary>>, acc) do
+    decode_entries_impl(rest, acc, expiry_ms)
+  end
+
+  defp decode_entries(data, acc) do
+    decode_entries_impl(data, acc)
+  end
+
+  @spec decode_entries_impl(binary(), t(), non_neg_integer() | nil) ::
+          {:ok, t(), binary()} | error_t()
+  defp decode_entries_impl(data, acc, expiry_ms \\ nil)
+
+  defp decode_entries_impl(<<0::8, rest::binary>>, acc, expiry_ms) do
+    # Read key
+    case Redis.RDB.decode_string(rest) do
+      {:ok, key, rest} ->
+        # Read value
+        case Redis.RDB.decode_string(rest) do
+          {:ok, value, rest} ->
+            # Put them together with the expiry into the acc and recurse.
+            value = Redis.Value.init(value, expiry_ms)
+            new_acc = Map.merge(acc, %{key => value})
+            decode_entries(rest, new_acc)
+
+          error_tuple ->
+            error_tuple
+        end
+
+      error_tuple ->
+        error_tuple
+    end
+  end
+
+  # TODO we only support string types for now.
+  defp decode_entries_impl(<<_value_type::8, _rest::binary>>, _acc, _expiry_ms),
+    do: {:error, :unimplemented_value_type}
+
+  @spec validate_entries(t(), non_neg_integer(), non_neg_integer()) :: :ok | {:error, atom()}
+  defp validate_entries(entries, num_total, num_expiry) do
+    length = map_size(entries)
+
+    length_w_expiry =
+      entries |> Enum.count(fn {_key, value} -> value.expiry_timestamp_epoch_ms != nil end)
+
+    cond do
+      num_expiry > num_total -> {:error, :invalid_resizedb_expiry_number}
+      length != num_total -> {:error, :missing_entries}
+      length_w_expiry != num_expiry -> {:error, :missing_entries}
+      true -> :ok
+    end
+  end
 
   @spec decode(binary(), list(t())) :: {:ok, list(t()), binary()} | error_t()
   def decode(data, acc \\ [])
 
+  # There are three pieces of information we can extract from a database subsection:
+  # 1. this database subsection's index
+  # 2. the hash table size (think of it as the database header)
+  # 3. and each key-value entry for this database subsection
+  # This function decodes zero or more database subsections, and returns them as an ordered list of Maps (each Map is a "database").
   def decode(<<@database_start, rest::binary>>, acc) do
-    # TODO implement this
-    case rest do
-      "0" ->
-        {:error, :invalid_database_section}
+    # %{integer() => t()} ==== %{integer(), %{binary() => %Redis.Value{}}}
 
-      _ ->
-        database_section = %{}
-        new_acc = acc ++ [database_section]
+    case decode_subsection(rest) do
+      {:ok, {db_index, entries = %{}}, rest} ->
+        # Update the list of databases based on the index key
+        new_acc = replace_at_padded(acc, db_index, entries, %{})
+        # Recurse to decode the next database subsection.
         decode(rest, new_acc)
+
+      error_tuple ->
+        error_tuple
     end
   end
 
-  # If on the first database section decode we find no database start byte, this is an error.
-  def decode(_data, []) do
-    {:error, :invalid_database_section}
-  end
-
-  # If on subsequent recursive calls we find no database start byte, then we've decoded enough.
+  # Base case, no more database subsections to decode.
   def decode(data, acc) do
     {:ok, acc, data}
+  end
+
+  # For the given list, replace the element at the given index with the given element, padding any elements if the index is greater than the current length.
+  @spec replace_at_padded(list(t()), non_neg_integer(), t(), term()) :: list(term())
+  defp replace_at_padded(list, index, element, padding) do
+    padding_needed = max(0, index - length(list) + 1)
+    padded_list = list ++ List.duplicate(padding, padding_needed)
+    List.replace_at(padded_list, index, element)
   end
 end
 

@@ -31,6 +31,7 @@ defmodule Redis.Application do
     Supervisor.start_link(children, opts)
   end
 
+  # TODO entries that have expired should be removed at this point
   @spec read_rdb_on_startup(CLIConfig.t()) :: KeyValueStore.data_t()
   def read_rdb_on_startup(cli_config) do
     # Read in the RDB file on startup, otherwise use an empty map as the KeyValueStore.
