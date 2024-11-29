@@ -10,9 +10,10 @@ defmodule Redis.RDBTest do
     end
 
     test "given invalid data should error out" do
-      {:error, :invalid_header_section} = RDB.decode_rdb("")
+      {:error, [:decode_rdb_header_decode, :header_decode_missing_header_byte]} =
+        RDB.decode_rdb("")
 
-      {:error, :invalid_header_section} =
+      {:error, [:decode_rdb_header_decode, :header_decode_missing_header_byte]} =
         RDB.decode_rdb("no way will thiswork because, this is just random text")
 
       rdb_truncated_after_metadata_section =
@@ -21,7 +22,8 @@ defmodule Redis.RDBTest do
           case: :lower
         )
 
-      {:error, :invalid_eof_section} = RDB.decode_rdb(rdb_truncated_after_metadata_section)
+      {:error, [:decode_rdb_eof_decode, :eof_decode_missing_eof_byte]} =
+        RDB.decode_rdb(rdb_truncated_after_metadata_section)
     end
 
     # test "given a valid empty RDB file" do
@@ -78,15 +80,17 @@ defmodule Redis.RDBTest do
 
     test "for LZF compressed strings" do
       input = <<0b11::2, 3::6, "whatever doesn't matter">>
-      {:error, :unimplemented_lzf_string} = RDB.decode_string(input)
+      {:error, [:decode_string_unimplemented_lzf_string]} = RDB.decode_string(input)
     end
   end
 
   describe "decode RDB header" do
     test "given invalid headers" do
-      {:error, :invalid_header_section} = RDB.Header.decode([])
-      {:error, :invalid_header_section} = RDB.Header.decode(<<"REDDIT">>)
-      {:error, :version_too_old} = RDB.Header.decode(<<"REDIS", "0001">>)
+      {:error, [:header_decode_missing_header_byte]} = RDB.Header.decode([])
+      {:error, [:header_decode_missing_header_byte]} = RDB.Header.decode(<<"REDDIT">>)
+
+      {:error, [:header_decode_init, :header_init_version_too_old]} =
+        RDB.Header.decode(<<"REDIS", "0001">>)
     end
 
     test "given valid headers" do
@@ -100,8 +104,13 @@ defmodule Redis.RDBTest do
 
   describe "decode RDB Metadata" do
     test "given invalid data" do
-      {:error, :bad_metadata_key} = RDB.Metadata.decode(<<0xFA>>)
-      {:error, :bad_metadata_value} = RDB.Metadata.decode(<<0xFA, 0x04, "toad">>)
+      {:error,
+       [:metadata_decode_pair, :decode_pair_bad_metadata_key, :decode_string_nothing_to_decode]} =
+        RDB.Metadata.decode(<<0xFA>>)
+
+      {:error,
+       [:metadata_decode_pair, :decode_pair_bad_metadata_value, :decode_string_nothing_to_decode]} =
+        RDB.Metadata.decode(<<0xFA, 0x04, "toad">>)
     end
 
     test "given a single metadata section" do

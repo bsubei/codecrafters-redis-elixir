@@ -1,11 +1,7 @@
 defmodule Redis.RDB do
   alias Redis.KeyValueStore
 
-  @type decoding_error_t() ::
-          __MODULE__.Header.error_t()
-          | __MODULE__.Metadata.error_t()
-          | __MODULE__.Database.error_t()
-          | __MODULE__.EndOfFile.error_t()
+  @type error_t() :: {:error, list(atom())}
 
   @spec get_empty_rdb() :: binary()
   def get_empty_rdb() do
@@ -15,21 +11,21 @@ defmodule Redis.RDB do
     Base.decode16!(hardcoded_rdb_in_hex, case: :lower)
   end
 
-  @spec decode_rdb_file(binary()) :: {:ok, list(KeyValueStore.data_t())} | {:error, atom()}
+  @spec decode_rdb_file(binary()) :: {:ok, list(KeyValueStore.data_t()), binary()} | error_t()
   def decode_rdb_file(filepath) do
     case File.open(filepath, [:read, :binary]) do
       {:ok, file} ->
         case IO.binread(file, :eof) do
-          {:error, reason} -> {:error, reason}
+          {:error, reason} -> {:error, [:decode_rdb_file_binread] ++ [reason]}
           rdb_data -> decode_rdb(IO.iodata_to_binary(rdb_data))
         end
 
-      error_w_reason ->
-        error_w_reason
+      {:error, reason} ->
+        {:error, [:decode_rdb_file_open] ++ [reason]}
     end
   end
 
-  @spec decode_rdb(binary()) :: {:ok, list(KeyValueStore.data_t())} | decoding_error_t()
+  @spec decode_rdb(binary()) :: {:ok, list(KeyValueStore.data_t()), binary()} | error_t()
   def decode_rdb(rdb_data) do
     # TODO there must be a cleaner way to express this "pipeline" of data transformations.
     IO.puts("Decoding RDB file...")
@@ -52,28 +48,24 @@ defmodule Redis.RDB do
                 )
 
                 case __MODULE__.EndOfFile.decode(rest, rdb_data) do
-                  :ok ->
-                    # TODO return actual useful stuff
-                    {:ok, database_sections}
-
-                  error_tuple ->
-                    error_tuple
+                  {:ok, rest} -> {:ok, database_sections, rest}
+                  {:error, reasons} -> {:error, [:decode_rdb_eof_decode | reasons]}
                 end
 
-              error_tuple ->
-                error_tuple
+              {:error, reasons} ->
+                {:error, [:decode_rdb_database_decode | reasons]}
             end
 
-          error_tuple ->
-            error_tuple
+          {:error, reasons} ->
+            {:error, [:decode_rdb_metadata_decode | reasons]}
         end
 
-      error_tuple ->
-        error_tuple
+      {:error, reasons} ->
+        {:error, [:decode_rdb_header_decode | reasons]}
     end
   end
 
-  @spec decode_string(binary()) :: {:ok, binary(), binary()} | {:error, atom()}
+  @spec decode_string(binary()) :: {:ok, binary(), binary()} | error_t()
 
   # If the two MSBs are "0b11", then this is either an integer or an LZF compressed string.
   def decode_string(<<0b11::2, 0b00::6, num::integer-8-little, rest::binary>>) do
@@ -93,15 +85,15 @@ defmodule Redis.RDB do
 
   def decode_string(<<0b11::2, 0b11::6, _rest::binary>>) do
     # LZF compressed string, not implemented
-    {:error, :unimplemented_lzf_string}
+    {:error, [:decode_string_unimplemented_lzf_string]}
   end
 
   def decode_string(<<0b11::2, _rest::binary>>) do
-    {:error, :invalid_string_encoding}
+    {:error, [:decode_string_invalid_string_encoding]}
   end
 
   def decode_string("") do
-    {:error, :nothing_to_decode}
+    {:error, [:decode_string_nothing_to_decode]}
   end
 
   def decode_string(data) do
@@ -117,9 +109,7 @@ defmodule Redis.RDB do
     end
   end
 
-  @spec decode_int(binary()) :: {:ok, non_neg_integer(), binary()} | {:error, atom()}
-
-  @spec decode_int(binary()) :: {:ok, non_neg_integer(), binary()} | {:error, atom()}
+  @spec decode_int(binary()) :: {:ok, non_neg_integer(), binary()} | error_t()
   def decode_int(<<0b00::2, lsbs::6, rest::binary>>) do
     # The 6 LSBs represent the length
     {:ok, lsbs, rest}
@@ -137,39 +127,39 @@ defmodule Redis.RDB do
 
   def decode_int(_) do
     # We don't expect the MSBs to be 0b11, that should never happen.
-    {:error, :invalid_length_encoded_int}
+    {:error, [:decode_int_invalid_length_encoded_int]}
   end
 end
 
 defmodule Redis.RDB.Header do
-  @type error_t :: {:error, :version_too_old | :invalid_header_section}
+  alias Redis.RDB
   @type t :: %__MODULE__{version: non_neg_integer()}
   defstruct [:version]
 
   @magic_string "REDIS"
   @min_supported_version 9
 
-  @spec init(non_neg_integer()) :: {:ok, Redis.RDB.Header.t()} | error_t()
+  @spec init(non_neg_integer()) :: {:ok, t()} | RDB.error_t()
   defp init(version) do
     if(version < @min_supported_version,
-      do: {:error, :version_too_old},
+      do: {:error, [:header_init_version_too_old]},
       else: {:ok, %__MODULE__{version: version}}
     )
   end
 
-  @spec decode(binary()) :: {:ok, t(), binary()} | error_t()
+  @spec decode(binary()) :: {:ok, t(), binary()} | RDB.error_t()
 
   def decode(<<@magic_string::binary, version::binary-size(4), rest::binary>>) do
     # Look for the magic string, then extract the version (an integer as 4 ASCII bytes). Return the header version and the rest of the data.
 
     case init(String.to_integer(version)) do
       {:ok, header} -> {:ok, header, rest}
-      error_tuple -> error_tuple
+      {:error, reasons} -> {:error, [:header_decode_init | reasons]}
     end
   end
 
   def decode(_data) do
-    {:error, :invalid_header_section}
+    {:error, [:header_decode_missing_header_byte]}
   end
 end
 
@@ -180,25 +170,22 @@ end
 # used-mem: Used memory of the instance that wrote the RDB
 
 defmodule Redis.RDB.Metadata do
-  @type error_t :: {:error, :bad_metadata_key | :bad_metadata_value}
+  alias Redis.RDB
   @type t :: %{binary() => binary()}
   @metadata_start 0xFA
 
-  @spec decode(binary(), t()) :: {:ok, t(), binary()} | error_t()
+  @spec decode(binary(), t()) :: {:ok, t(), binary()} | RDB.error_t()
   def decode(input, acc \\ %{})
 
   # Decodes zero or more metadata sections.
   def decode(<<@metadata_start, rest::binary>>, acc) do
-    # TODO parse the actual metadata section here
-    # TODO there must be one key-value pair in each metadata section
     case decode_metadata_pair(rest) do
       {:ok, key, value, new_rest} ->
-        # IO.puts("Decoded #{key}, #{value}, rest: #{inspect(new_rest, base: :hex)}")
         new_acc = Map.merge(acc, %{key => value})
         decode(new_rest, new_acc)
 
-      error_tuple ->
-        error_tuple
+      {:error, reasons} ->
+        {:error, [:metadata_decode_pair | reasons]}
     end
   end
 
@@ -207,26 +194,26 @@ defmodule Redis.RDB.Metadata do
     {:ok, acc, data}
   end
 
-  @spec decode_metadata_pair(binary()) :: {:ok, binary(), binary(), binary()} | error_t()
+  @spec decode_metadata_pair(binary()) :: {:ok, binary(), binary(), binary()} | RDB.error_t()
   defp decode_metadata_pair(data) do
-    case Redis.RDB.decode_string(data) do
+    case RDB.decode_string(data) do
       {:ok, key, rest} ->
-        case Redis.RDB.decode_string(rest) do
+        case RDB.decode_string(rest) do
           {:ok, value, rest} ->
             {:ok, key, value, rest}
 
-          _error_tuple ->
-            {:error, :bad_metadata_value}
+          {:error, reasons} ->
+            {:error, [:decode_pair_bad_metadata_value | reasons]}
         end
 
-      _error_tuple ->
-        {:error, :bad_metadata_key}
+      {:error, reasons} ->
+        {:error, [:decode_pair_bad_metadata_key | reasons]}
     end
   end
 end
 
 defmodule Redis.RDB.Database do
-  @type error_t :: {:error, :invalid_resizedb | :invalid_resizedb_expiry_number | :missing_eof}
+  alias Redis.RDB
   # Each database subsection gets parsed as a KeyValueStore.
   @type t :: Redis.KeyValueStore.data_t()
   @database_start 0xFE
@@ -236,7 +223,33 @@ defmodule Redis.RDB.Database do
   # Yes, this is also defined in another module, but it's never going to change, so it's fine.
   @eof_start 0xFF
 
-  @spec decode_subsection(binary()) :: {:ok, {non_neg_integer(), t()}, binary()} | error_t()
+  @spec decode(binary(), list(t())) :: {:ok, list(t()), binary()} | RDB.error_t()
+  def decode(data, acc \\ [])
+
+  # There are three pieces of information we can extract from a database subsection:
+  # 1. this database subsection's index
+  # 2. the hash table size (think of it as the database header)
+  # 3. and each key-value entry for this database subsection
+  # This function decodes zero or more database subsections, and returns them as an ordered list of Maps (each Map is a "database").
+  def decode(<<@database_start, rest::binary>>, acc) do
+    case decode_subsection(rest) do
+      {:ok, {db_index, entries = %{}}, rest} ->
+        # Update the list of databases based on the index key
+        new_acc = replace_at_padded(acc, db_index, entries, %{})
+        # Recurse to decode the next database subsection.
+        decode(rest, new_acc)
+
+      {:error, reasons} ->
+        {:error, [:database_decode_decode_subsection | reasons]}
+    end
+  end
+
+  # Base case, no more database subsections to decode.
+  def decode(data, acc) do
+    {:ok, acc, data}
+  end
+
+  @spec decode_subsection(binary()) :: {:ok, {non_neg_integer(), t()}, binary()} | RDB.error_t()
   defp decode_subsection(data) do
     # Grab the index from the database selector, i.e. the index of the database we're about to decode.
     <<db_index::8, rest::binary>> = data
@@ -251,38 +264,41 @@ defmodule Redis.RDB.Database do
               :ok ->
                 {:ok, {db_index, entries}, rest}
 
-              error_tuple ->
-                error_tuple
+              {:error, reasons} ->
+                {:error, [:decode_subsection_validate_entries | reasons]}
             end
+
+          {:error, reasons} ->
+            {:error, [:decode_subsection_decode_entries | reasons]}
         end
 
-      error_tuple ->
-        error_tuple
+      {:error, reasons} ->
+        {:error, [:decode_subsection_decode_resize_db | reasons]}
     end
   end
 
   @spec decode_resizedb(binary()) ::
-          {:ok, {non_neg_integer(), non_neg_integer()}, binary()} | error_t()
+          {:ok, {non_neg_integer(), non_neg_integer()}, binary()} | RDB.error_t()
   defp decode_resizedb(<<@resizedb_start, rest::binary>>) do
     # The resizedb section simply has two length-encoded integers.
-    case Redis.RDB.decode_int(rest) do
+    case RDB.decode_int(rest) do
       {:ok, num_total_entries, rest} ->
-        case Redis.RDB.decode_int(rest) do
+        case RDB.decode_int(rest) do
           {:ok, num_expiry_entries, rest} ->
             {:ok, {num_total_entries, num_expiry_entries}, rest}
 
-          _ ->
-            {:error, :invalid_resizedb}
+          {:error, reasons} ->
+            {:error, [:decode_resize_db_invalid_num_expiry_entries | reasons]}
         end
 
-      _ ->
-        {:error, :invalid_resizedb}
+      {:error, reasons} ->
+        {:error, [:decode_resize_db_invalid_num_total_entries | reasons]}
     end
   end
 
   defp decode_resizedb(_data), do: {:error, :invalid_resizedb}
 
-  @spec decode_entries(binary(), t()) :: {:ok, t(), binary()} | error_t()
+  @spec decode_entries(binary(), t()) :: {:ok, t(), binary()} | RDB.error_t()
   defp decode_entries(data, acc \\ %{})
   # NOTE: we don't strip off the eof or db first byte if we return without recursing.
   # If we see the end of file, that's the end of this database section.
@@ -291,7 +307,7 @@ defmodule Redis.RDB.Database do
   defp decode_entries(<<@database_start, _rest::binary>> = data, acc), do: {:ok, acc, data}
 
   defp decode_entries("", _acc) do
-    {:error, :missing_eof}
+    {:error, [:decode_entries_missing_eof]}
   end
 
   defp decode_entries(<<@expiry_s_entry_start, expiry_s::integer-32-little, rest::binary>>, acc) do
@@ -308,35 +324,35 @@ defmodule Redis.RDB.Database do
   end
 
   @spec decode_entries_impl(binary(), t(), non_neg_integer() | nil) ::
-          {:ok, t(), binary()} | error_t()
+          {:ok, t(), binary()} | RDB.error_t()
   defp decode_entries_impl(data, acc, expiry_ms \\ nil)
 
   defp decode_entries_impl(<<0::8, rest::binary>>, acc, expiry_ms) do
     # Read key
-    case Redis.RDB.decode_string(rest) do
+    case RDB.decode_string(rest) do
       {:ok, key, rest} ->
         # Read value
-        case Redis.RDB.decode_string(rest) do
+        case RDB.decode_string(rest) do
           {:ok, value, rest} ->
             # Put them together with the expiry into the acc and recurse.
             value = Redis.Value.init(value, expiry_ms)
             new_acc = Map.merge(acc, %{key => value})
             decode_entries(rest, new_acc)
 
-          error_tuple ->
-            error_tuple
+          {:error, reasons} ->
+            {:error, [:decode_entries_impl_invalid_entry_value | reasons]}
         end
 
-      error_tuple ->
-        error_tuple
+      {:error, reasons} ->
+        {:error, [:decode_entries_impl_invalid_entry_key | reasons]}
     end
   end
 
   # TODO we only support string types for now.
   defp decode_entries_impl(<<_value_type::8, _rest::binary>>, _acc, _expiry_ms),
-    do: {:error, :unimplemented_value_type}
+    do: {:error, [:decode_entries_impl_unimplemented_value_type]}
 
-  @spec validate_entries(t(), non_neg_integer(), non_neg_integer()) :: :ok | {:error, atom()}
+  @spec validate_entries(t(), non_neg_integer(), non_neg_integer()) :: :ok | RDB.error_t()
   defp validate_entries(entries, num_total, num_expiry) do
     length = map_size(entries)
 
@@ -344,39 +360,11 @@ defmodule Redis.RDB.Database do
       entries |> Enum.count(fn {_key, value} -> value.expiry_timestamp_epoch_ms != nil end)
 
     cond do
-      num_expiry > num_total -> {:error, :invalid_resizedb_expiry_number}
-      length != num_total -> {:error, :missing_entries}
-      length_w_expiry != num_expiry -> {:error, :missing_entries}
+      num_expiry > num_total -> {:error, [:validate_entries_num_expiry_more_than_total]}
+      length != num_total -> {:error, [:validate_entries_bad_num_total]}
+      length_w_expiry != num_expiry -> {:error, [:validate_entries_bad_num_expiry]}
       true -> :ok
     end
-  end
-
-  @spec decode(binary(), list(t())) :: {:ok, list(t()), binary()} | error_t()
-  def decode(data, acc \\ [])
-
-  # There are three pieces of information we can extract from a database subsection:
-  # 1. this database subsection's index
-  # 2. the hash table size (think of it as the database header)
-  # 3. and each key-value entry for this database subsection
-  # This function decodes zero or more database subsections, and returns them as an ordered list of Maps (each Map is a "database").
-  def decode(<<@database_start, rest::binary>>, acc) do
-    # %{integer() => t()} ==== %{integer(), %{binary() => %Redis.Value{}}}
-
-    case decode_subsection(rest) do
-      {:ok, {db_index, entries = %{}}, rest} ->
-        # Update the list of databases based on the index key
-        new_acc = replace_at_padded(acc, db_index, entries, %{})
-        # Recurse to decode the next database subsection.
-        decode(rest, new_acc)
-
-      error_tuple ->
-        error_tuple
-    end
-  end
-
-  # Base case, no more database subsections to decode.
-  def decode(data, acc) do
-    {:ok, acc, data}
   end
 
   # For the given list, replace the element at the given index with the given element, padding any elements if the index is greater than the current length.
@@ -389,26 +377,28 @@ defmodule Redis.RDB.Database do
 end
 
 defmodule Redis.RDB.EndOfFile do
-  @type error_t :: {:error, :invalid_eof_section}
+  alias Redis.RDB
   @eof_start 0xFF
 
-  @spec decode(binary(), binary()) :: :ok | error_t()
+  @spec decode(binary(), binary()) :: {:ok, binary()} | RDB.error_t()
 
   def decode(<<@eof_start, rest::binary>>, all_data) do
     crc_check(all_data, rest)
   end
 
   def decode(_data, _all_data) do
-    {:error, :invalid_eof_section}
+    {:error, [:eof_decode_missing_eof_byte]}
   end
 
-  @spec crc_check(binary(), binary()) :: :ok | error_t()
+  @spec crc_check(binary(), binary()) :: {:ok, binary()} | RDB.error_t()
   def crc_check(all_data, crc) do
     # TODO actually implement
+    rest = ""
+
     if all_data == crc do
-      :ok
+      {:ok, rest}
     else
-      {:error, :invalid_crc}
+      {:error, :crc_check_failed_checksum}
     end
   end
 end

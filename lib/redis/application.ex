@@ -48,7 +48,7 @@ defmodule Redis.Application do
         filepath = "#{dir}/#{dbfilename}"
 
         case Redis.RDB.decode_rdb_file(filepath) do
-          {:ok, databases} ->
+          {:ok, databases, ""} ->
             # TODO we assume the first database in the RDB file is the one we want.
             case databases do
               [] ->
@@ -58,19 +58,22 @@ defmodule Redis.Application do
 
                 %{}
 
-              [db | _rest] ->
+              [db | _rest_of_dbs] ->
                 db
             end
 
-          {:error, :enoent} ->
+          {:ok, _databases, rest} ->
+            raise "Got #{byte_size(rest)} leftover bytes after decoding RDB file..."
+
+          {:error, [_, :enoent]} ->
             IO.puts(
               "Could not find RDB file: #{filepath}, continuing with an empty KeyValueStore!"
             )
 
             %{}
 
-          {:error, reason} ->
-            raise "Unhandled error #{reason} while decoding RDB file..."
+          {:error, reasons} ->
+            raise "Unhandled error: #{inspect(reasons)} while decoding RDB file..."
         end
     end
   end
