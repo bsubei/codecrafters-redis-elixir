@@ -28,25 +28,12 @@ defmodule Redis.RDB do
   @spec decode_rdb(binary()) :: {:ok, list(KeyValueStore.data_t()), binary()} | error_t()
   def decode_rdb(rdb_data) do
     # TODO there must be a cleaner way to express this "pipeline" of data transformations.
-    IO.puts("Decoding RDB file...")
-
     case __MODULE__.Header.decode(rdb_data) do
-      {:ok, header, rest} ->
-        IO.puts("Redis version #{header.version} detected...")
-
+      {:ok, _header, rest} ->
         case __MODULE__.Metadata.decode(rest) do
-          {:ok, %{} = metadata, rest} ->
-            IO.puts("Decoded #{map_size(metadata)} metadata entries:")
-            IO.puts("#{inspect(metadata)}")
-
+          {:ok, %{} = _metadata, rest} ->
             case __MODULE__.Database.decode(rest) do
               {:ok, database_sections, rest} ->
-                IO.puts("Decoded #{length(database_sections)} database section(s)...")
-
-                IO.puts(
-                  "The lengths of the database sections: #{inspect(database_sections |> Enum.map(&map_size(&1)))}..."
-                )
-
                 case __MODULE__.EndOfFile.decode(rest, rdb_data) do
                   {:ok, rest} -> {:ok, database_sections, rest}
                   {:error, reasons} -> {:error, [:decode_rdb_eof_decode | reasons]}
@@ -220,8 +207,6 @@ defmodule Redis.RDB.Database do
   @resizedb_start 0xFB
   @expiry_s_entry_start 0xFD
   @expiry_ms_entry_start 0xFC
-  # Yes, this is also defined in another module, but it's never going to change, so it's fine.
-  @eof_start 0xFF
 
   @spec decode(binary(), list(t())) :: {:ok, list(t()), binary()} | RDB.error_t()
   def decode(data, acc \\ [])
@@ -234,7 +219,7 @@ defmodule Redis.RDB.Database do
   def decode(<<@database_start, rest::binary>>, acc) do
     case decode_subsection(rest) do
       {:ok, {db_index, entries = %{}}, rest} ->
-        # Update the list of databases based on the index key
+        # Update the list of databases based on the index key. This effectively re-orders the returned list based on the db index.
         new_acc = replace_at_padded(acc, db_index, entries, %{})
         # Recurse to decode the next database subsection.
         decode(rest, new_acc)
@@ -250,14 +235,13 @@ defmodule Redis.RDB.Database do
   end
 
   @spec decode_subsection(binary()) :: {:ok, {non_neg_integer(), t()}, binary()} | RDB.error_t()
-  defp decode_subsection(data) do
+  defp decode_subsection(<<db_index::8, rest::binary>>) do
     # Grab the index from the database selector, i.e. the index of the database we're about to decode.
-    <<db_index::8, rest::binary>> = data
 
     # Grab the resizedb section, which is only used for validation in our case since we won't bother with pre-allocating the database hashmap.
     case decode_resizedb(rest) do
       {:ok, {num_total_entries, num_expiry_entries}, rest} ->
-        case decode_entries(rest) do
+        case decode_entries(rest, num_total_entries) do
           {:ok, entries = %{}, rest} ->
             # validate total entries and expiry entries
             case validate_entries(entries, num_total_entries, num_expiry_entries) do
@@ -275,6 +259,10 @@ defmodule Redis.RDB.Database do
       {:error, reasons} ->
         {:error, [:decode_subsection_decode_resize_db | reasons]}
     end
+  end
+
+  defp decode_subsection(_data) do
+    {:error, [:decode_subsection_missing_db_index]}
   end
 
   @spec decode_resizedb(binary()) ::
@@ -296,38 +284,43 @@ defmodule Redis.RDB.Database do
     end
   end
 
-  defp decode_resizedb(_data), do: {:error, :invalid_resizedb}
+  defp decode_resizedb(_data), do: {:error, [:invalid_resizedb]}
 
-  @spec decode_entries(binary(), t()) :: {:ok, t(), binary()} | RDB.error_t()
-  defp decode_entries(data, acc \\ %{})
-  # NOTE: we don't strip off the eof or db first byte if we return without recursing.
-  # If we see the end of file, that's the end of this database section.
-  defp decode_entries(<<@eof_start, _rest::binary>> = data, acc), do: {:ok, acc, data}
-  # If we see the start of the next of the next db, that's the end of this database section.
-  defp decode_entries(<<@database_start, _rest::binary>> = data, acc), do: {:ok, acc, data}
+  @spec decode_entries(binary(), non_neg_integer(), t()) :: {:ok, t(), binary()} | RDB.error_t()
+  defp decode_entries(data, num_remaining, acc \\ %{})
 
-  defp decode_entries("", _acc) do
+  defp decode_entries(data, 0, acc), do: {:ok, acc, data}
+
+  defp decode_entries("", _num_remaining, _acc) do
     {:error, [:decode_entries_missing_eof]}
   end
 
-  defp decode_entries(<<@expiry_s_entry_start, expiry_s::integer-32-little, rest::binary>>, acc) do
+  defp decode_entries(
+         <<@expiry_s_entry_start, expiry_s::integer-32-little, rest::binary>>,
+         num_remaining,
+         acc
+       ) do
     expiry_ms = expiry_s * 1000
-    decode_entries_impl(rest, acc, expiry_ms)
+    decode_entries_impl(rest, num_remaining, acc, expiry_ms)
   end
 
-  defp decode_entries(<<@expiry_ms_entry_start, expiry_ms::integer-64-little, rest::binary>>, acc) do
-    decode_entries_impl(rest, acc, expiry_ms)
+  defp decode_entries(
+         <<@expiry_ms_entry_start, expiry_ms::integer-64-little, rest::binary>>,
+         num_remaining,
+         acc
+       ) do
+    decode_entries_impl(rest, num_remaining, acc, expiry_ms)
   end
 
-  defp decode_entries(data, acc) do
-    decode_entries_impl(data, acc)
+  defp decode_entries(data, num_remaining, acc) do
+    decode_entries_impl(data, num_remaining, acc)
   end
 
-  @spec decode_entries_impl(binary(), t(), non_neg_integer() | nil) ::
+  @spec decode_entries_impl(binary(), non_neg_integer(), t(), non_neg_integer() | nil) ::
           {:ok, t(), binary()} | RDB.error_t()
-  defp decode_entries_impl(data, acc, expiry_ms \\ nil)
+  defp decode_entries_impl(data, num_remaining, acc, expiry_ms \\ nil)
 
-  defp decode_entries_impl(<<0::8, rest::binary>>, acc, expiry_ms) do
+  defp decode_entries_impl(<<0::8, rest::binary>>, num_remaining, acc, expiry_ms) do
     # Read key
     case RDB.decode_string(rest) do
       {:ok, key, rest} ->
@@ -337,7 +330,7 @@ defmodule Redis.RDB.Database do
             # Put them together with the expiry into the acc and recurse.
             value = Redis.Value.init(value, expiry_ms)
             new_acc = Map.merge(acc, %{key => value})
-            decode_entries(rest, new_acc)
+            decode_entries(rest, num_remaining - 1, new_acc)
 
           {:error, reasons} ->
             {:error, [:decode_entries_impl_invalid_entry_value | reasons]}
@@ -349,7 +342,7 @@ defmodule Redis.RDB.Database do
   end
 
   # TODO we only support string types for now.
-  defp decode_entries_impl(<<_value_type::8, _rest::binary>>, _acc, _expiry_ms),
+  defp decode_entries_impl(<<_value_type::8, _rest::binary>>, _num_remaining, _acc, _expiry_ms),
     do: {:error, [:decode_entries_impl_unimplemented_value_type]}
 
   @spec validate_entries(t(), non_neg_integer(), non_neg_integer()) :: :ok | RDB.error_t()
@@ -382,23 +375,26 @@ defmodule Redis.RDB.EndOfFile do
 
   @spec decode(binary(), binary()) :: {:ok, binary()} | RDB.error_t()
 
-  def decode(<<@eof_start, rest::binary>>, all_data) do
-    crc_check(all_data, rest)
+  def decode(<<@eof_start, crc::integer-64-little, rest::binary>>, all_data) do
+    case crc_check(all_data, crc) do
+      :ok -> {:ok, rest}
+      {:error, reasons} -> {:error, [:eof_decode_crc_check | reasons]}
+    end
   end
 
   def decode(_data, _all_data) do
     {:error, [:eof_decode_missing_eof_byte]}
   end
 
-  @spec crc_check(binary(), binary()) :: {:ok, binary()} | RDB.error_t()
-  def crc_check(all_data, crc) do
+  @spec crc_check(binary(), non_neg_integer()) :: :ok | RDB.error_t()
+  def crc_check(_all_data, _crc) do
     # TODO actually implement
-    rest = ""
+    checksum_result = true
 
-    if all_data == crc do
-      {:ok, rest}
+    if checksum_result == true do
+      :ok
     else
-      {:error, :crc_check_failed_checksum}
+      {:error, [:crc_check_failed_checksum]}
     end
   end
 end
