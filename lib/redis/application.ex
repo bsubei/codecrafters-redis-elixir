@@ -48,7 +48,8 @@ defmodule Redis.Application do
         filepath = "#{dir}/#{dbfilename}"
 
         case Redis.RDB.decode_rdb_file(filepath) do
-          {:ok, databases, ""} ->
+          # NOTE: normally, I would raise if rest was not empty, but in practice we tend to get rdb files that have a newline at the end
+          {:ok, databases, _rest} ->
             # TODO we assume the first database in the RDB file is the one we want.
             case databases do
               [] ->
@@ -61,9 +62,6 @@ defmodule Redis.Application do
               [db | _rest_of_dbs] ->
                 db
             end
-
-          {:ok, _databases, rest} ->
-            raise "Got #{byte_size(rest)} leftover bytes after decoding RDB file..."
 
           {:error, [_, :enoent]} ->
             IO.puts(

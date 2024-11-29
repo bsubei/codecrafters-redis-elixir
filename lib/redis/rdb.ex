@@ -388,7 +388,7 @@ defmodule Redis.RDB.EndOfFile do
 
   @spec crc_check(binary(), non_neg_integer()) :: :ok | RDB.error_t()
   def crc_check(_all_data, _crc) do
-    # TODO actually implement
+    # TODO actually implement CRC checksum
     checksum_result = true
 
     if checksum_result == true do
